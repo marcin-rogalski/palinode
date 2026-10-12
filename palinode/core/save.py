@@ -843,7 +843,11 @@ def save_memory(
 
     # Layer 2 wiki contract: auto-append See also footer for any entities
     # not already referenced as [[wikilinks]] in the body.
-    body_content = _apply_wiki_footer(effective_content, normalized_entities)
+    footer_entities = normalized_entities
+    if save_outcome == "appended" and isinstance(frontmatter_dict["entities"], list):
+        # The composed body lost the prior footer, so rebuild it from the carried list.
+        footer_entities = frontmatter_dict["entities"]
+    body_content = _apply_wiki_footer(effective_content, footer_entities)
 
     doc = f"---\n{yaml.safe_dump(frontmatter_dict, default_flow_style=False, allow_unicode=True)}---\n\n{body_content}\n"
 

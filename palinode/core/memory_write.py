@@ -152,8 +152,8 @@ def strip_wiki_footer(content: str) -> str:
     ``## See also`` section is left alone (it carries no marker, so the pattern
     does not match it). Used when composing an append: the prior body's footer
     belongs at the end of the *composed* document, not stranded in the middle
-    of it, and ``_apply_wiki_footer`` re-emits it there when this save supplies
-    entities.
+    of it, and ``_apply_wiki_footer`` re-emits it there from the entities the
+    composed front matter carries, the prior ones included.
     """
     if not content:
         return content

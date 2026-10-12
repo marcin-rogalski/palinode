@@ -477,6 +477,79 @@ def test_the_other_console_scripts_are_untouched():
     }
 
 
+# ── edges on the entry point ────────────────────────────────────────────────
+
+def _nothing_was_loaded(ran: Ran) -> None:
+    assert _BANNER not in ran.stderr
+    assert _NO_CONFIG_WARNING not in ran.stderr
+    assert ran.stdout == ""
+    assert ran.requests == []
+
+
+@pytest.mark.parametrize("form", ["separate", "equals", "mixed"])
+def test_two_leading_dir_options_are_a_usage_error_and_load_nothing(world, form):
+    first, second = str(world.named), str(world.other)
+    leading = {
+        "separate": ["--dir", first, "--dir", second],
+        "equals": [f"--dir={first}", f"--dir={second}"],
+        "mixed": ["--dir", first, f"--dir={second}"],
+    }[form]
+
+    ran = _run(world, [*leading, "search", "q"], stubbed=True, env={"PALINODE_DIR": first})
+
+    assert ran.returncode == 2, ran.stderr
+    assert "given twice" in ran.stderr
+    _nothing_was_loaded(ran)
+
+
+def test_a_value_that_looks_like_an_option_is_taken_as_the_path(world):
+    """``--dir --help`` names a directory called ``--help``; it is not a request for help."""
+    ran = _run(world, ["--dir", "--help"], stubbed=True, env={"PALINODE_DIR": str(world.named)})
+
+    error = [line for line in ran.stderr.splitlines() if line.startswith("Error")]
+    assert ran.returncode == 2, ran.stderr
+    assert error and "--help" in error[0], ran.stderr
+    _nothing_was_loaded(ran)
+
+
+def test_a_symlink_to_a_directory_is_used_as_the_path_it_was_given_not_resolved(world):
+    link = world.root / "link-to-named"
+    link.symlink_to(world.named, target_is_directory=True)
+
+    ran = _run(world, ["--dir", str(link), "obsidian-sync"], env={"PALINODE_DIR": str(world.other)})
+
+    assert f"No .md files found under {link} " in ran.stdout, ran.stderr
+    assert str(link / "palinode.config.yaml") in ran.stderr
+
+
+def test_a_dangling_symlink_is_a_usage_error_that_names_it_and_loads_nothing(world):
+    dangling = world.root / "dangling-link"
+    dangling.symlink_to(world.root / "nowhere", target_is_directory=True)
+
+    ran = _run(world, ["--dir", str(dangling), "search", "q"], stubbed=True,
+               env={"PALINODE_DIR": str(world.named)})
+
+    assert ran.returncode == 2, ran.stderr
+    assert str(dangling) in ran.stderr
+    _nothing_was_loaded(ran)
+
+
+@pytest.mark.parametrize("form", ["separate", "equals"])
+def test_a_path_with_a_space_in_it_names_the_store(world, form):
+    spaced = world.root / "stores" / "release notes"
+    spaced.mkdir()
+    (spaced / "palinode.config.yaml").write_text("context:\n  enabled: false\n", encoding="utf-8")
+    flag = ["--dir", str(spaced)] if form == "separate" else [f"--dir={spaced}"]
+
+    ran = _search(world, *flag, env={"PALINODE_DIR": str(world.other)})
+    written = _run(world, [*flag, *_MCP_CONFIG], env={"PALINODE_DIR": str(world.other)})
+
+    assert _NO_CONFIG_WARNING not in ran.stderr
+    assert str(spaced / "palinode.config.yaml") in ran.stderr
+    assert _context_sent(ran) == []
+    assert _store_written_by_mcp_config(written) == str(spaced)
+
+
 # ── 10. docs ────────────────────────────────────────────────────────────────
 
 def _section(text: str, heading: str) -> str:

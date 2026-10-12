@@ -193,7 +193,7 @@ def test_cli_search_sends_where_as_a_json_list(cli_recorder):
 
 
 @pytest.mark.parametrize("command", [["list"], ["search", "release checklist", "--no-context"]])
-@pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x"])
+@pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x", "status="])
 def test_cli_malformed_where_is_a_usage_error_before_any_request(cli_recorder, command, entry):
     """Red: the output never names the entry. On v0.22.0 click answers with
     ``No such option: --where``, which is also exit code 2."""
@@ -327,7 +327,7 @@ def test_mcp_search_sends_where_as_a_json_list(mcp_recorder):
     ("palinode_list", {}),
     ("palinode_search", {"query": "release checklist"}),
 ])
-@pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x"])
+@pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x", "status="])
 def test_mcp_malformed_where_is_an_error_reply_before_any_request(
     mcp_recorder, tool_name, arguments, entry
 ):

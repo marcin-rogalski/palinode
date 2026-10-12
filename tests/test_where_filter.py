@@ -301,9 +301,69 @@ def test_search_where_applies_to_a_recency_listing(api, three_statuses):
     assert found == [three_statuses["open"]]
 
 
+# ── booleans and values that contain "=" ────────────────────────────────────
+
+@pytest.fixture()
+def flagged(api) -> dict[str, str]:
+    """Two records with a boolean ``reviewed`` key and ``core``: true and false."""
+    return {
+        "yes": _save(api, "flag-yes", core=True, metadata={"reviewed": True}),
+        "no": _save(api, "flag-no", core=False, metadata={"reviewed": False}),
+    }
+
+
+@pytest.mark.parametrize("key", ["core", "reviewed"])
+def test_list_where_boolean_matches_its_lower_case_yaml_spelling(api, flagged, key):
+    """Red: ``where`` is ignored, so both records come back."""
+    assert _list(api, where=[f"{key}=true"]) == [flagged["yes"]]
+    assert _list(api, where=[f"{key}=false"]) == [flagged["no"]]
+
+
+@pytest.mark.parametrize("key", ["core", "reviewed"])
+def test_list_where_boolean_does_not_match_python_spelling(api, flagged, key):
+    """Red: ``where`` is ignored, so both records come back."""
+    assert _list(api, where=[f"{key}=True"]) == []
+    assert _list(api, where=[f"{key}=False"]) == []
+
+
+@pytest.mark.parametrize("key", ["core", "reviewed"])
+def test_search_where_boolean_matches_its_lower_case_yaml_spelling(api, flagged, key):
+    """Red: ``where`` is ignored, so both records come back."""
+    assert _search(api, where=[f"{key}=true"]) == [flagged["yes"]]
+    assert _search(api, where=[f"{key}=false"]) == [flagged["no"]]
+
+
+@pytest.mark.parametrize("key", ["core", "reviewed"])
+def test_search_where_boolean_does_not_match_python_spelling(api, flagged, key):
+    """Red: ``where`` is ignored, so both records come back."""
+    assert _search(api, where=[f"{key}=True"]) == []
+    assert _search(api, where=[f"{key}=False"]) == []
+
+
+@pytest.fixture()
+def notes(api) -> dict[str, str]:
+    return {
+        "equals": _save(api, "note-equals", metadata={"note": "a=b"}),
+        "prefix": _save(api, "note-prefix", metadata={"note": "a"}),
+        "suffix": _save(api, "note-suffix", metadata={"note": "b"}),
+    }
+
+
+def test_list_where_splits_on_the_first_equals_only(api, notes):
+    """Red: ``where`` is ignored, so all three come back."""
+    assert _list(api, where=["note=a=b"]) == [notes["equals"]]
+
+
+def test_search_where_splits_on_the_first_equals_only(api, notes):
+    """Red: ``where`` is ignored, so all three come back."""
+    assert _search(api, where=["note=a=b"]) == [notes["equals"]]
+
+
 # ── malformed where is a 422 ────────────────────────────────────────────────
 
-_MALFORMED = ["no-equals", "=value", "bad key=x", "1leading-digit=x", "dotted.key=x", ""]
+_MALFORMED = [
+    "no-equals", "=value", "bad key=x", "1leading-digit=x", "dotted.key=x", "", "status=",
+]
 
 
 @pytest.mark.parametrize("entry", _MALFORMED)

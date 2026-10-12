@@ -63,6 +63,7 @@ jobs:
         working-directory: /tmp
         run: |
           /tmp/wheel-venv/bin/palinode --version
+          /tmp/wheel-venv/bin/palinode --dir "$(mktemp -d)" --version
           /tmp/wheel-venv/bin/palinode --help
 
       - name: Smoke the incident import chain

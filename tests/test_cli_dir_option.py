@@ -127,6 +127,7 @@ def _run(
         "HOME": str(world.home),
         "RUN_REQUEST_LOG": str(log),
         "RUN_ENTRY_MODULE": ENTRY_MODULE,
+        "PYTHONPATH": str(REPO),
         **(env or {}),
     }
     if way == "entry" and not stubbed:
@@ -456,7 +457,7 @@ def test_importing_the_entry_module_loads_no_configuration(world):
         [sys.executable, "-c", probe],
         cwd=world.root,
         env={"PATH": os.environ["PATH"], "HOME": str(world.home),
-             "PALINODE_DIR": str(world.named)},
+             "PYTHONPATH": str(REPO), "PALINODE_DIR": str(world.named)},
         capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
     )
 

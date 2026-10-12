@@ -106,6 +106,7 @@ class PalinodeAPI:
         date_after: str | None = None,
         date_before: str | None = None,
         include_daily: bool | None = None,
+        where: list[str] | None = None,
         include_telemetry: bool | None = None,
         tier: str | None = None,
         resolve: str | None = None,
@@ -141,6 +142,8 @@ class PalinodeAPI:
             payload["types"] = list(types)
         if min_priority is not None:
             payload["min_priority"] = min_priority
+        if where:
+            payload["where"] = list(where)
         if date_after:
             payload["date_after"] = date_after
         if date_before:
@@ -288,6 +291,8 @@ class PalinodeAPI:
         category: str | None = None,
         core_only: bool | None = None,
         include_retired_core: bool | None = None,
+        where: list[str] | None = None,
+        include_inbox: bool | None = None,
     ) -> list[dict[str, Any]]:
         """List memory files via the API.  ADR-010.
 
@@ -302,6 +307,10 @@ class PalinodeAPI:
             params["core_only"] = "true"
         if include_retired_core:
             params["include_retired_core"] = "true"
+        if where:
+            params["where"] = list(where)
+        if include_inbox:
+            params["include_inbox"] = "true"
         response = self.client.get("/list", params=params)
         response.raise_for_status()
         return response.json()

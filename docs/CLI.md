@@ -1070,12 +1070,21 @@ injection surfaces).
 |---|---|---|
 | `--category [people\|projects\|decisions\|insights\|research]` | all | Filter by memory directory |
 | `--core` | off | Only core memory files |
+| `--where KEY=VALUE` | none | Only files whose frontmatter has `KEY` equal to `VALUE`; repeatable, all must match (see below) |
+| `--include-inbox` | off | Also list `inbox/`, where ActionItems are saved |
 | `--format [text\|json]` | auto | Output format |
 
 ```bash
 palinode list --category decisions
 palinode list --core --format json
+palinode list --include-inbox --where type=ActionItem --where status=open
 ```
+
+A `--where` value matches a scalar by its text, a boolean as `true` or `false`
+(`core=true`, not `core=True`) and a timestamp as the same instant in any
+ISO 8601 extended spelling. A list matches when any element does. A file without
+the key, or with a null or a mapping there, never matches. A malformed entry
+exits with status 2 before any request is made.
 
 Output: **auto**.
 
@@ -1725,6 +1734,7 @@ store. Filters narrow by directory, type, priority, date, and recency;
 | `--threshold FLOAT` | from config | Similarity threshold 0.0–1.0; higher is stricter |
 | `--since-days INTEGER` | none | Only memories created/updated in the last N days |
 | `--types TYPE` | all | Filter by memory type; repeatable |
+| `--where KEY=VALUE` | none | Only memories whose frontmatter has `KEY` equal to `VALUE`; repeatable, all must match (as for `palinode list`). Applied to the best 5×`--limit` candidates, so a rare match can be missed; `palinode list --where` reads every file |
 | `--min-priority INTEGER` | none | Only memories with priority ≥ N (missing counts as 3) |
 | `--date-after TEXT` / `--date-before TEXT` | none | ISO date bounds on created/updated |
 | `--include-daily` | off | Rank `daily/` session notes at full weight (default: penalised) |

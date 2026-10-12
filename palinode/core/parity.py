@@ -302,6 +302,9 @@ REGISTRY: tuple[Operation, ...] = (
         canonical_params=(
             CanonicalParam(name="category", type="string", enum=CATEGORIES),
             CanonicalParam(name="core_only", type="boolean"),
+            CanonicalParam(name="where", type="array"),
+            # Lifts the inbox/ skip; ActionItems are saved there.
+            CanonicalParam(name="include_inbox", type="boolean"),
         ),
         cli_command="list",
         mcp_tool="palinode_list",
@@ -336,6 +339,7 @@ REGISTRY: tuple[Operation, ...] = (
             ),
             CanonicalParam(name="since_days", type="integer"),
             CanonicalParam(name="types", type="array", enum=MEMORY_TYPES),
+            CanonicalParam(name="where", type="array"),
             CanonicalParam(name="min_priority", type="integer"),
             CanonicalParam(name="date_after", type="string"),
             CanonicalParam(name="date_before", type="string"),

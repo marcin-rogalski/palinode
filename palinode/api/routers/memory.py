@@ -2,8 +2,8 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
-from typing import Any, Iterable, Literal
-from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated, Any, Iterable, Literal
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from palinode.core import store
 from palinode.core.agent_directed import read_notice, withhold_agent_directed
@@ -17,8 +17,9 @@ from palinode.core.skip_dirs import is_skipped_path
 from palinode.core.expiry import core_has_expired
 from palinode.core.lifecycle import eligibility, retired_reason
 from palinode.core.visibility import is_visible
+from palinode.core.where import matches_where, parse_where
 from palinode.api._util import (
-    _auto_summary_state, _retrieval_logger, _safe_500, _utc_now,
+    WhereEntries, _auto_summary_state, _retrieval_logger, _safe_500, _utc_now,
 )
 from palinode.api.path_safety import (
     _memory_base_dir, _open_memory_file_text, _resolve_memory_path,
@@ -340,6 +341,7 @@ def collect_memory_files(
     skip_dirs: Iterable[str] | None = None,
     include_history: bool = True,
     include_retired_core: bool = False,
+    where: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Enumerate memory files as /list-shaped rows, newest first.
 
@@ -388,7 +390,9 @@ def collect_memory_files(
     listing. ``include_history`` controls whether ``-history.md``
     consolidation-audit siblings are included; the default (``True``)
     preserves the classic ``GET /list`` contract, and the UI passes ``False``
-    since those siblings aren't browsable memories.
+    since those siblings aren't browsable memories. ``where`` keeps only the
+    files whose frontmatter satisfies every parsed ``(key, value)`` condition
+    (:func:`palinode.core.where.matches_where`).
     """
     import glob
     from palinode.core import parser
@@ -421,6 +425,8 @@ def collect_memory_files(
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
             metadata, _ = parser.parse_frontmatter(content)
+            if where and not matches_where(metadata, where):
+                continue
 
             is_core = bool(metadata.get("core", False))
             # A retired core memory stays listed and searchable but no longer
@@ -485,6 +491,8 @@ def list_api(
     category: Literal[*CATEGORIES] | None = None,
     core_only: bool = False,
     include_retired_core: bool = False,
+    where: Annotated[WhereEntries, Query()] = None,
+    include_inbox: bool = False,
 ) -> list[dict[str, Any]]:
     """Browse memories, newest first.
 
@@ -496,11 +504,16 @@ def list_api(
     deprecated, retracted, expired) reports ``core: false`` with
     ``core_retired_reason``, and ``include_retired_core=true`` is how a browse
     caller asks for it anyway.
+
+    ``where`` keeps the records whose frontmatter matches every ``key=value``
+    entry; ``include_inbox`` lists ``inbox/``, where ActionItems are saved.
     """
     return collect_memory_files(
         category=category,
         core_only=core_only,
         include_retired_core=include_retired_core,
+        skip_dirs=(_DEFAULT_LIST_SKIP_DIRS - {"inbox"}) if include_inbox else None,
+        where=parse_where(where),
     )
 
 

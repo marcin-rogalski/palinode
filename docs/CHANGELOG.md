@@ -6,11 +6,15 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Search and list filter on frontmatter with `where`.** Each entry is `key=value` and every entry must match: a scalar by its text, a boolean as `true`/`false` and a timestamp as the same instant in any ISO 8601 extended spelling; a list when any element matches; a record without the key, or with a null or a mapping there, never matches. Search applies it to its best 5×`limit` candidates, as it does `types`, so a rare match can be missed; list reads every file. On `POST /search` it is a JSON list, on `GET /list` a repeated query parameter, on the CLI a repeatable `--where`, and on the MCP `palinode_search` and `palinode_list` tools an array; the OpenClaw plugin's `palinode_search` passes it through. A malformed entry is refused before any request: a 422 on REST, exit status 2 on the CLI, an `Error:` reply on MCP.
+
 ### Changed
 
 - **README: current-release wording for v0.22.0.** Drops the pre-release "v0.21-capable source checkout" phrasing for lexical mode and client fragments, and says how a remote HTTP client keeps recall scoped (`palinode mcp-config --http --project <slug>`), since a request without the `X-Palinode-Project` header is unscoped.
 
 ### Fixed
+
+- **ActionItems can be listed.** They are saved under `inbox/`, which `GET /list` always skipped. `include_inbox=true` (`palinode list --include-inbox`, `include_inbox` on the MCP `palinode_list` tool) lists it too; the default is unchanged.
 
 ### Removed
 

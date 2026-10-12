@@ -26,6 +26,7 @@ from palinode.core.defaults import (
     SESSION_END_DEDUP_WINDOW_MINUTES,
 )
 from palinode.core.path_guard import to_rel_path
+from palinode.core.where import matches_where
 
 from palinode.api._util import _utc_now
 from palinode.api.path_safety import _open_memory_file_text, _resolve_memory_path
@@ -61,6 +62,15 @@ def _filter_types(results: list[dict[str, Any]], types: list[str] | None) -> lis
         return results
     allowed = set(types)
     return [r for r in results if r.get("metadata", {}).get("type") in allowed]
+
+
+def _filter_where(
+    results: list[dict[str, Any]], conditions: list[tuple[str, str]] | None
+) -> list[dict[str, Any]]:
+    """Keep results whose frontmatter satisfies every ``where`` condition."""
+    if not conditions:
+        return results
+    return [r for r in results if matches_where(r.get("metadata") or {}, conditions)]
 
 
 def _filter_type_deny(

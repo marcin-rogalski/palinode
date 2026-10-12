@@ -895,6 +895,7 @@ def save_memory(
     # leaving a race window where /search immediately after /save returned
     # zero results. The watcher remains the indexer for filesystem-direct
     # writes; this path covers API-driven saves.
+    # embeddings.defer_embed_on_save opts out: FTS now, vectors on the watcher's pass.
     indexed = False
     embedded = False
     indexed_vec: bool = True
@@ -902,7 +903,9 @@ def save_memory(
     index_error: str | None = None
     try:
         from palinode.indexer.index_file import index_file
-        outcome = index_file(file_path)
+        outcome = index_file(
+            file_path, defer_embed=config.embeddings.defer_embed_on_save
+        )
         embedded = bool(outcome.get("embedded"))
         indexed = bool(outcome.get("indexed", embedded))
         # Surface per-index health so callers can detect silent vec0/FTS5

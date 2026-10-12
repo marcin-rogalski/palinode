@@ -88,6 +88,15 @@ SESSION_END_TIMEOUT_SECONDS: float = float(
 #: see which surfaces must be updated.
 _SESSION_END_TIMEOUT_SENTINEL: float = 90.0
 
+# ── Save timeout ──────────────────────────────────────────────────────
+
+#: HTTP request timeout (in seconds) for ``POST /save`` on the CLI and MCP.  A
+#: slow inline embed can outlast it after the write has landed; see
+#: ``embeddings.defer_embed_on_save``.  ``PALINODE_SAVE_TIMEOUT`` overrides it.
+SAVE_TIMEOUT_SECONDS: float = float(
+    __import__("os").environ.get("PALINODE_SAVE_TIMEOUT", "30")
+)
+
 # ── Session-end dedup ─────────────────────────────────────────────────
 
 #: Lookback window (in minutes) over which ``session_end`` checks recently

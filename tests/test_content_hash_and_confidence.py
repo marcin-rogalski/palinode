@@ -212,7 +212,7 @@ class TestPriority:
                 return {"file_path": "/x", "id": "x"}
 
         class _FakeClient:
-            def post(self, path, json=None, params=None):
+            def post(self, path, json=None, params=None, timeout=None):
                 captured["json"] = json
                 return _FakeResp()
 

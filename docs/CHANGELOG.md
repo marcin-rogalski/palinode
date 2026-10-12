@@ -6,6 +6,8 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **A save can return before its embed, and the save request timeout is configurable.** On a slow embedder, `POST /save` could outlast the CLI and MCP clients' fixed 30 s timeout after the write had landed, so the client reported a failure for a save that succeeded and a retry saved it twice. `embeddings.defer_embed_on_save: true` (env `PALINODE_DEFER_EMBED_ON_SAVE`, default off) makes the save use the existing cold-embedder path: keyword-searchable rows now, `embedded: false` with the deferral in `index_error`, and vectors on the watcher's next pass. `PALINODE_SAVE_TIMEOUT` (seconds, default 30) sets the CLI and MCP save request timeout. Both default to the previous behaviour.
+
 ### Changed
 
 - **README: current-release wording for v0.22.0.** Drops the pre-release "v0.21-capable source checkout" phrasing for lexical mode and client fragments, and says how a remote HTTP client keeps recall scoped (`palinode mcp-config --http --project <slug>`), since a request without the `X-Palinode-Project` header is unscoped.

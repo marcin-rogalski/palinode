@@ -24,12 +24,16 @@ from palinode.indexer import reconcile
 logger = logging.getLogger("palinode.indexer")
 
 
-def index_file(filepath: str, *, content: str | None = None) -> dict[str, Any]:
+def index_file(
+    filepath: str, *, content: str | None = None, defer_embed: bool = False
+) -> dict[str, Any]:
     """Reconcile one markdown file's derived state with the DB.
 
     Args:
         filepath: absolute path to the .md file (must exist on disk).
         content: optional pre-read file content. If omitted, reads from disk.
+        defer_embed: write FTS-only rows without embedding, as the cold path
+            does; a later pass on the file embeds them.
 
     Returns:
         dict with keys:
@@ -80,7 +84,7 @@ def index_file(filepath: str, *, content: str | None = None) -> dict[str, Any]:
             result["error"] = f"read failed: {e}"
             return result
 
-    diff = reconcile.reconcile(filepath, content)
+    diff = reconcile.reconcile(filepath, content, defer_embed=defer_embed)
     result.update(
         indexed=diff.committed and diff.fts_ok and (
             config.search.retrieval_mode == "lexical"

@@ -56,7 +56,7 @@
           inherit propagatedBuildInputs;
 
           # Entry points defined in pyproject.toml [project.scripts]:
-          #   palinode            → palinode.cli:main
+          #   palinode            → palinode.entry:main
           #   palinode-api        → palinode.api.server:main
           #   palinode-mcp        → palinode.mcp:main
           #   palinode-mcp-http   → palinode.mcp:main_http

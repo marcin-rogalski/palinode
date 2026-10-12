@@ -37,8 +37,15 @@ paths.
 `migrate frontmatter`, and `worktree-reconcile` all report first and need an
 explicit `--execute`, `--apply`, or `--no-dry-run` to write.
 
-Global options: `palinode --version` prints the banner and version;
-`palinode --help` (or `palinode <command> --help`) prints usage.
+## Global options
+
+Global options go between `palinode` and the command.
+
+| Option | Description |
+|---|---|
+| `--dir PATH` | Use `PATH` as the memory directory for this one command, in place of `PALINODE_DIR`. `palinode.config.yaml` is read from `PATH`. Must come first: `palinode --dir ~/notes search "q"`, never after the command. A path that is not an existing directory exits 2. `~` is expanded, and a relative path is taken from the current directory, which stays the one the project is resolved from. |
+| `--version` | Print the banner and version. |
+| `--help` | Print usage; `palinode <command> --help` prints the command's. |
 
 ---
 

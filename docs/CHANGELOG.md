@@ -6,6 +6,8 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **`palinode --dir PATH` names the memory directory for one command.** It does what `PALINODE_DIR=PATH` does, config file included, and wins over the variable when both are set. It goes before the subcommand (`palinode --dir ~/notes search "q"`); a path that is not an existing directory exits 2. The `palinode` console script now starts at `palinode.entry:main`, which reads the option before the configuration loads; an editable install made earlier needs `pip install -e .` again to pick it up.
+
 ### Changed
 
 - **README: current-release wording for v0.22.0.** Drops the pre-release "v0.21-capable source checkout" phrasing for lexical mode and client fragments, and says how a remote HTTP client keeps recall scoped (`palinode mcp-config --http --project <slug>`), since a request without the `X-Palinode-Project` header is unscoped.

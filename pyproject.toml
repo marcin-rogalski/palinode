@@ -69,7 +69,7 @@ dependencies = [
 [project.scripts]
 palinode-watcher = "palinode.indexer.watcher:main"
 palinode-api = "palinode.api.server:main"
-palinode = "palinode.cli:main"
+palinode = "palinode.entry:main"
 palinode-mcp = "palinode.mcp:main"
 palinode-mcp-http = "palinode.mcp:main_http"
 palinode-mcp-sse = "palinode.mcp:main_sse"  # deprecated alias for main_http

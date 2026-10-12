@@ -51,7 +51,28 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     ctx.exit()
 
 
+def _refuse_store_dir(ctx: click.Context, param: click.Parameter, value: str | None) -> None:
+    # Reached only when the palinode command did not read it, e.g. a direct call of this group.
+    if value is None or ctx.resilient_parsing:
+        return
+    raise click.UsageError(
+        "--dir must come first, before any other option or subcommand: "
+        "the palinode command reads it before the configuration loads. If it came first, "
+        "reinstall palinode (pip install -e .) so the command starts at palinode.entry:main.",
+        ctx,
+    )
+
+
 @click.group()
+@click.option(
+    "--dir",
+    type=click.Path(),
+    metavar="PATH",
+    callback=_refuse_store_dir,
+    expose_value=False,
+    is_eager=True,
+    help="Use PATH as the memory directory, in place of PALINODE_DIR. Must come first.",
+)
 @click.option(
     "--version",
     is_flag=True,

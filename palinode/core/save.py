@@ -845,8 +845,9 @@ def save_memory(
     # not already referenced as [[wikilinks]] in the body.
     footer_entities = normalized_entities
     if save_outcome == "appended" and isinstance(frontmatter_dict["entities"], list):
-        # The composed body lost the prior footer, so rebuild it from the carried list.
-        footer_entities = frontmatter_dict["entities"]
+        # The composed body lost the prior footer, so rebuild it from the carried list;
+        # only strings name a page, and the list may hold whatever a caller sent.
+        footer_entities = [e for e in frontmatter_dict["entities"] if isinstance(e, str)]
     body_content = _apply_wiki_footer(effective_content, footer_entities)
 
     doc = f"---\n{yaml.safe_dump(frontmatter_dict, default_flow_style=False, allow_unicode=True)}---\n\n{body_content}\n"

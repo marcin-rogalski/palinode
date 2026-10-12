@@ -28,6 +28,7 @@ Real SQLite + tmp_path; the embedder is mocked so the test does not need Ollama
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import frontmatter
@@ -282,6 +283,48 @@ def test_append_does_not_move_expires_at(memory_dir):
 
     meta = _load(path).metadata
     assert str(meta["expires_at"]) == str(expires)
+    assert "ttl" not in meta
+
+
+def _instant(value) -> datetime:
+    return datetime.fromisoformat(str(value))
+
+
+def test_append_that_sets_a_ttl_resolves_a_new_expires_at(memory_dir):
+    """A key the save sets wins, ``ttl`` included: the new ``ttl`` is resolved
+    from now and replaces the carried ``expires_at``, and is not written itself.
+
+    Passes on v0.22.0, where nothing is carried. It fails against a carry that
+    lets the prior ``expires_at`` shadow the new ``ttl``.
+    """
+    path = _save(memory_dir, content=_FIRST, slug="rollout",
+                 metadata={"ttl": "7d"}, update_policy="append")
+    first_expiry = _instant(_load(path).metadata["expires_at"])
+
+    _save(memory_dir, content=_SECOND, slug="rollout",
+          metadata={"ttl": "30d"}, update_policy="append")
+
+    meta = _load(path).metadata
+    new_expiry = _instant(meta["expires_at"])
+    assert new_expiry > first_expiry
+    assert abs(new_expiry - _instant(meta["last_updated"]) - timedelta(days=30)) < timedelta(hours=1)
+    assert "ttl" not in meta
+
+
+def test_append_that_sets_a_ttl_still_carries_the_other_keys(memory_dir):
+    """Red: the same append, with the prior ``title`` and ``status`` checked.
+    Both are absent on v0.22.0 (KeyError)."""
+    path = _save(memory_dir, content=_FIRST, slug="rollout",
+                 metadata={**_FIRST_METADATA, "ttl": "7d"}, update_policy="append")
+    first_expiry = _instant(_load(path).metadata["expires_at"])
+
+    _save(memory_dir, content=_SECOND, slug="rollout",
+          metadata={"ttl": "30d"}, update_policy="append")
+
+    meta = _load(path).metadata
+    assert meta["title"] == "Release checklist"
+    assert meta["status"] == "open"
+    assert _instant(meta["expires_at"]) > first_expiry
     assert "ttl" not in meta
 
 

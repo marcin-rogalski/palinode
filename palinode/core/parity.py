@@ -339,7 +339,6 @@ REGISTRY: tuple[Operation, ...] = (
             ),
             CanonicalParam(name="since_days", type="integer"),
             CanonicalParam(name="types", type="array", enum=MEMORY_TYPES),
-            CanonicalParam(name="where", type="array"),
             CanonicalParam(name="min_priority", type="integer"),
             CanonicalParam(name="date_after", type="string"),
             CanonicalParam(name="date_before", type="string"),

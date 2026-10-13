@@ -1291,11 +1291,6 @@ def _all_tools() -> list[types.Tool]:
                         },
                         "description": "Filter by memory type (matches frontmatter `type`).",
                     },
-                    "where": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Frontmatter filters as key=value (e.g. status=open); all must match.",
-                    },
                     "min_priority": {
                         "type": "integer",
                         "minimum": 1,
@@ -2839,13 +2834,7 @@ async def _tool_read(arguments: dict[str, Any]) -> list[types.TextContent]:
 # ── search ────────────────────────────────────────────────────────
 @_handles("palinode_search")
 async def _tool_search(arguments: dict[str, Any]) -> list[types.TextContent]:
-    try:
-        where = _where_argument(arguments)
-    except WhereError as e:
-        return _text(f"Error: {e}")
     body: dict[str, Any] = {"query": arguments["query"]}
-    if where:
-        body["where"] = where
     if arguments.get("tier"):
         body["tier"] = arguments["tier"]
     if arguments.get("category"):

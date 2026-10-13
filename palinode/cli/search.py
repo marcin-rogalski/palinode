@@ -2,7 +2,6 @@ import click
 from rich.markup import escape
 from palinode.cli._api import HTTPStatusError, api_client
 from palinode.cli._format import print_result, console, OutputFormat, get_default_format
-from palinode.cli._options import validate_where
 from palinode.core.parity import CATEGORIES, MEMORY_TYPES, RESOLVE_MODES, TIERS
 from palinode.core.scoring import describe_match
 
@@ -180,12 +179,6 @@ def _status_labels(res: dict) -> str:
     ),
 )
 @click.option(
-    "--where",
-    multiple=True,
-    callback=validate_where,
-    help="Only memories whose frontmatter has key=value (e.g. status=open). Repeat to require all.",
-)
-@click.option(
     "--min-priority",
     type=click.IntRange(1, 5),
     help="Only return memories with human-assigned priority at least N (missing defaults to 3).",
@@ -260,7 +253,6 @@ def search(
     threshold,
     since_days,
     types,
-    where,
     min_priority,
     date_after,
     date_before,
@@ -292,7 +284,6 @@ def search(
             threshold=threshold,
             since_days=since_days,
             types=list(types) if types else None,
-            where=list(where) or None,
             min_priority=min_priority,
             date_after=date_after,
             date_before=date_before,

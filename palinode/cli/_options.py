@@ -1,4 +1,4 @@
-"""Click callbacks shared by more than one command."""
+"""Click callbacks for command options."""
 from __future__ import annotations
 
 import click

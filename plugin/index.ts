@@ -507,11 +507,6 @@ const palinodePlugin = {
               description: "Filter by memory type (e.g. Decision, Insight).",
             }),
           ),
-          where: Type.Optional(
-            Type.Array(Type.String(), {
-              description: "Frontmatter filters as key=value (e.g. status=open); all must match.",
-            }),
-          ),
           date_after: Type.Optional(
             Type.String({ description: "Filter results after an ISO date (e.g. 2024-01-01)." }),
           ),
@@ -579,7 +574,6 @@ const palinodePlugin = {
             if (params.threshold !== undefined) body.threshold = params.threshold;
             if (params.since_days !== undefined) body.since_days = params.since_days;
             if (params.types !== undefined) body.types = params.types;
-            if (params.where !== undefined) body.where = params.where;
             if (params.date_after !== undefined) body.date_after = params.date_after;
             if (params.date_before !== undefined) body.date_before = params.date_before;
             if (params.include_daily !== undefined) body.include_daily = params.include_daily;

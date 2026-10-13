@@ -1080,11 +1080,15 @@ palinode list --core --format json
 palinode list --include-inbox --where type=ActionItem --where status=open
 ```
 
-A `--where` value matches a scalar by its text, a boolean as `true` or `false`
-(`core=true`, not `core=True`) and a timestamp as the same instant in any
-ISO 8601 extended spelling. A list matches when any element does. A file without
-the key, or with a null or a mapping there, never matches. A malformed entry
-exits with status 2 before any request is made.
+A `--where` value matches a scalar by its text and a boolean as `true` or `false`
+(`core=true`, not `core=True`). A dashed ISO date, optionally with a time, is read
+as `--date-after`/`--date-before` read it: a timestamp matches the same instant
+whether written with `T` or a space, with `Z`, an offset or none; a value without an
+offset is UTC; a stored bare date is midnight UTC; and `--where due=2026-10-12`
+matches any time on that UTC day. `20261012` and `2026-W42` are compared as text.
+A list matches when any element does. A file without the key, or with a null or a
+mapping there, never matches. A malformed entry exits with status 2 before any
+request is made.
 
 Output: **auto**.
 
@@ -1734,7 +1738,6 @@ store. Filters narrow by directory, type, priority, date, and recency;
 | `--threshold FLOAT` | from config | Similarity threshold 0.0–1.0; higher is stricter |
 | `--since-days INTEGER` | none | Only memories created/updated in the last N days |
 | `--types TYPE` | all | Filter by memory type; repeatable |
-| `--where KEY=VALUE` | none | Only memories whose frontmatter has `KEY` equal to `VALUE`; repeatable, all must match (as for `palinode list`). Applied to the best 5×`--limit` candidates, so a rare match can be missed; `palinode list --where` reads every file |
 | `--min-priority INTEGER` | none | Only memories with priority ≥ N (missing counts as 3) |
 | `--date-after TEXT` / `--date-before TEXT` | none | ISO date bounds on created/updated |
 | `--include-daily` | off | Rank `daily/` session notes at full weight (default: penalised) |

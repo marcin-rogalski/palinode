@@ -1,8 +1,8 @@
-"""Front-matter ``where`` filters shared by search, list and their surfaces.
+"""Front-matter ``where`` filters for list and its surfaces.
 
 An entry is ``key=value``. Every entry must match: a scalar by its text (booleans
-as ``true``/``false``, timestamps as the same instant), a list when any element
-does. A record without the key, or with a null or a mapping there, never matches.
+as ``true``/``false``), a list when any element does, and a date or timestamp as
+the search date window reads it. A key that is missing, null or a mapping never matches.
 """
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from collections.abc import Iterable
 from datetime import date, datetime
 from typing import Any
 
+from palinode.core.ranker import parse_iso_utc
+
 _KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*")
-# A date and a time, in either of the spellings a stored timestamp comes back in.
-_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+# Only the dashed form: an id such as 20261012 or 2026-W42 must not be read as a date.
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}.*)?")
 
 
 class WhereError(ValueError):
@@ -49,24 +51,23 @@ def _as_text(value: Any) -> str | None:
     return str(value)
 
 
-def _as_instant(text: str) -> datetime | None:
-    if not _TIMESTAMP_RE.match(text):
-        return None
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
+def _is_in_date_span(text: str, expected: str) -> bool:
+    if not (_DATE_RE.fullmatch(text) and _DATE_RE.fullmatch(expected)):
+        return False
+    # As in_date_window(text, expected, expected): a bare date spans its whole UTC day.
+    stamp = parse_iso_utc(text)
+    start = parse_iso_utc(expected)
+    end = parse_iso_utc(expected, end_of_day=True)
+    if stamp is None or start is None or end is None:
+        return False
+    return start <= stamp <= end
 
 
 def _matches_value(candidate: Any, expected: str) -> bool:
     text = _as_text(candidate)
     if text is None:
         return False
-    if text == expected:
-        return True
-    # A file read back gives "T", the index's JSON copy a space, and a writer may use "Z".
-    instant = _as_instant(text)
-    return instant is not None and instant == _as_instant(expected)
+    return text == expected or _is_in_date_span(text, expected)
 
 
 def matches_where(metadata: dict[str, Any], conditions: list[tuple[str, str]]) -> bool:

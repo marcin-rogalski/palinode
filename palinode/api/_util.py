@@ -118,9 +118,8 @@ _auto_summary_state: dict[str, Any] = {
 
 def _check_where(where: list[str] | None) -> list[str] | None:
     parse_where(where)
-    # An empty list selects what unset does, so it must not change the receipt's request.
-    return where or None
+    return where
 
 
-# ``key=value`` frontmatter filters, refused with the same 422 on every route.
+# ``key=value`` frontmatter filters, refused with a 422 that names the entry.
 WhereEntries = Annotated[list[str] | None, AfterValidator(_check_where)]

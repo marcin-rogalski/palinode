@@ -1,21 +1,22 @@
-"""Edges of ``where``: timestamp spellings, MCP argument shapes, non-scalar values.
+"""Edges of ``where`` on the listing: timestamps, MCP argument shapes, non-scalar values.
 
 ``test_where_filter.py`` and ``test_where_filter_surfaces.py`` pin the contract.
 This file pins three places where the matching or the argument handling has more
-than one way to go wrong, each across every surface that must agree:
+than one way to go wrong:
 
-* a timestamp is matched as an instant, so the ``T``, space, ``Z`` and offset
-  spellings select the same record on ``GET /list``, on ``POST /search`` and on
-  the recency listing (an empty query), for a value stored as text and for one
-  stored as a YAML timestamp;
-* the MCP ``where`` argument is a list, a bare string or a JSON-string array;
-  an object or an item that is not a string is refused naming the problem, with
-  no request made;
-* a key holding null, a mapping, or a list of mappings never matches, on any
-  surface, and never fails the request.
+* a timestamp is matched as an instant: the ``T``, space, ``Z`` and offset
+  spellings select the same record on ``GET /list``, for a value stored as text
+  and for one stored as a YAML timestamp, and a value with no offset is UTC. Only
+  a date and a time are timestamps: a bare date, ``20261012`` and ``2026-W42``
+  are compared as text, so none of them equals ``2026-10-12`` or a midnight;
+* the ``palinode_list`` ``where`` argument is a list, a bare string or a
+  JSON-string array; an object or an item that is not a string is refused naming
+  the problem, with no request made;
+* a key holding null, a mapping, or a list of mappings never matches and never
+  fails the request.
 
-Every test here passes on the feature head. Each docstring names the mutant it
-kills.
+Each docstring names the mutant it kills. A test that is red on the head it was
+written against says why.
 
 Real SQLite + tmp_path through ``TestClient`` in lexical retrieval mode, so no
 embedder is involved; a prior record that only a YAML parser could have written
@@ -24,7 +25,8 @@ embedder is involved; a prior record that only a YAML parser could have written
 from __future__ import annotations
 
 import asyncio
-import json
+import os
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -84,94 +86,164 @@ def _save(api, slug: str, **kwargs) -> str:
     return response.json()["rel_path"]
 
 
-def _found(api, surface: str, entry: str) -> list[str]:
-    """The paths one ``where`` entry selects on *surface*, asserting a 200."""
-    if surface == "list":
-        response = api.get("/list", params={"where": entry})
-        rows = response.json() if response.status_code == 200 else None
-        paths = [row["file"] for row in rows or []]
-    else:
-        query = _KEYWORD if surface == "search" else ""
-        response = api.post(
-            "/search",
-            json={"query": query, "where": [entry], "limit": 10, "threshold": 0.0},
-        )
-        payload = response.json() if response.status_code == 200 else None
-        rows = payload["results"] if isinstance(payload, dict) else payload
-        paths = [row["rel_path"] for row in rows or []]
-    assert response.status_code == 200, f"{surface} {entry!r}: {response.text}"
-    return paths
-
-
-_SURFACES = ["list", "search", "recent"]
+def _found(api, entry: str) -> list[str]:
+    """The paths one ``where`` entry selects on ``GET /list``, asserting a 200."""
+    response = api.get("/list", params={"where": entry})
+    assert response.status_code == 200, f"{entry!r}: {response.text}"
+    return [row["file"] for row in response.json()]
 
 
 # ── timestamps ──────────────────────────────────────────────────────────────
 
+_INSTANT = "2026-03-01T10:00:00Z"
 _INSTANT_SPELLINGS = [
     "2026-03-01T10:00:00+00:00",
     "2026-03-01 10:00:00+00:00",
     "2026-03-01T10:00:00Z",
     "2026-03-01T11:00:00+01:00",
     "2026-03-01T10:00:00.000000+00:00",
+    "2026-03-01T10:00:00",
+    "2026-03-01 10:00:00",
+    "2026-03-01T10:00:00.000000",
+    "2026-03-01T12:00:00+02:00",
+    "2026-03-01 12:00:00+02:00",
 ]
-_INSTANT_IDS = ["T-offset", "space-offset", "Z", "other-offset", "microseconds"]
+_INSTANT_IDS = [
+    "T-offset", "space-offset", "Z", "other-offset", "microseconds",
+    "naive-T", "naive-space", "naive-microseconds", "plus-two", "space-plus-two",
+]
+# How `_INSTANT` can be stored: YAML timestamps, which a parser turns into datetimes,
+# and text, which a save keeps as written.
+_STORED_AS_YAML = {
+    "yaml-naive": "due: 2026-03-01 10:00:00\n",
+    "yaml-utc": "due: 2026-03-01T10:00:00Z\n",
+    "yaml-plus-two": "due: 2026-03-01T12:00:00+02:00\n",
+}
+_STORED_AS_TEXT = {
+    "text-naive-T": "2026-03-01T10:00:00",
+    "text-naive-space": "2026-03-01 10:00:00",
+    "text-offset": "2026-03-01T10:00:00+00:00",
+}
 
 
 @pytest.fixture()
 def stamped(api, memory_dir) -> dict[str, str]:
-    """``due`` stored as text (saved through the API) and as a YAML timestamp."""
-    return {
-        "text": _save(api, "due-text", metadata={"due": "2026-03-01T10:00:00+00:00"}),
-        "yaml": _write(memory_dir, "due-yaml", "due: 2026-03-01T10:00:00Z\n"),
-        "other": _save(api, "due-other", metadata={"due": "2026-03-01T10:00:01+00:00"}),
+    """``due`` is `_INSTANT` in six stored forms, and one second later in a seventh."""
+    records = {
+        name: _write(memory_dir, name, front_matter)
+        for name, front_matter in _STORED_AS_YAML.items()
     }
+    for name, due in _STORED_AS_TEXT.items():
+        records[name] = _save(api, name, metadata={"due": due})
+    records["other"] = _save(api, "due-other", metadata={"due": "2026-03-01T10:00:01+00:00"})
+    return records
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
+def _the_instant(stamped: dict[str, str]) -> list[str]:
+    return sorted(path for name, path in stamped.items() if name != "other")
+
+
 @pytest.mark.parametrize("spelling", _INSTANT_SPELLINGS, ids=_INSTANT_IDS)
-def test_every_spelling_of_an_instant_selects_the_same_records(
-    api, stamped, surface, spelling
+def test_every_spelling_of_an_instant_selects_every_way_it_is_stored(
+    api, stamped, spelling
 ):
-    """Kills any change that compares a timestamp by its text, or by one spelling:
-    ``_as_instant`` dropped, the ``[T ]`` pattern narrowed, ``Z`` unsupported."""
-    found = _found(api, surface, f"due={spelling}")
+    """Red: a stored value with no offset never equals an entry with one, and the
+    other way round. Kills any change that compares a timestamp by its text, or by
+    one spelling: the instant dropped, the ``[T ]`` pattern narrowed, ``Z``
+    unsupported, a missing offset left unread."""
+    found = _found(api, f"due={spelling}")
 
-    assert sorted(found) == sorted([stamped["text"], stamped["yaml"]])
+    assert sorted(found) == _the_instant(stamped)
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
-def test_a_different_instant_selects_neither(api, stamped, surface):
+def test_a_different_instant_selects_neither(api, stamped):
     """Kills the instant comparison collapsing to a prefix or to a date match."""
-    found = _found(api, surface, "due=2026-03-01T10:00:02Z")
+    assert _found(api, "due=2026-03-01T10:00:02Z") == []
+    assert _found(api, "due=2026-03-01T10:00:02") == []
 
-    assert found == []
+
+def test_a_value_with_no_offset_is_not_read_in_the_offset_of_the_other(api, stamped):
+    """Kills a missing offset being compared by its wall clock: ten o'clock at
+    ``+02:00`` is eight o'clock UTC, and nothing was stored then."""
+    assert _found(api, "due=2026-03-01T10:00:00+02:00") == []
+    assert _found(api, "due=2026-03-01T08:00:00") == []
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
-def test_a_list_of_timestamps_matches_by_element_as_an_instant(
-    api, memory_dir, surface
-):
-    """Kills list elements being compared by text while scalars compare as instants."""
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+@pytest.mark.parametrize("zone", ["Europe/Warsaw", "America/New_York", "Asia/Kolkata"])
+def test_a_value_with_no_offset_is_utc_in_every_local_zone(api, stamped, zone):
+    """Kills a missing offset being read in the machine's zone, which a laptop
+    set to UTC would never show."""
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = zone
+    time.tzset()
+    try:
+        found = _found(api, f"due={_INSTANT}")
+    finally:
+        if before is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+
+    assert sorted(found) == _the_instant(stamped)
+
+
+@pytest.mark.parametrize("spelling", ["2026-04-01 11:00:00+01:00", "2026-04-01T10:00:00"])
+def test_a_list_of_timestamps_matches_by_element_as_an_instant(api, memory_dir, spelling):
+    """Kills list elements being compared by text while scalars compare as instants.
+    The second element has no offset."""
     path = _write(
         memory_dir, "due-many",
-        "due:\n- 2026-03-01T10:00:00Z\n- 2026-04-01T10:00:00Z\n",
+        "due:\n- 2026-03-01T10:00:00Z\n- 2026-04-01 10:00:00\n",
     )
+    _write(memory_dir, "due-one", "due: 2026-05-01T10:00:00Z\n")
 
-    found = _found(api, surface, "due=2026-04-01 11:00:00+01:00")
-
-    assert found == [path]
+    assert _found(api, f"due={spelling}") == [path]
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
-def test_a_timestamp_with_no_offset_never_fails_the_request(api, memory_dir, surface):
-    """A stored value with no offset against an entry that has one cannot be
-    compared as instants. Kills the comparison raising on mixed awareness."""
-    _write(memory_dir, "due-naive", "due: 2026-03-01 10:00:00\n")
+@pytest.mark.parametrize(
+    "entry, expected",
+    [
+        ("day=2026-10-12", ["date"]),
+        ("day=20261012", ["compact"]),
+        ("day=2026-W42", ["week"]),
+        ("day=20261012T000000Z", ["basic"]),
+        ("day=2026-10-12T00:00:00Z", ["midnight-utc", "midnight-naive"]),
+        ("day=2026-10-12 00:00:00", ["midnight-utc", "midnight-naive"]),
+        ("day=2026-10-12T00:00:00", ["midnight-utc", "midnight-naive"]),
+    ],
+)
+def test_only_a_date_and_a_time_are_compared_as_instants(api, memory_dir, entry, expected):
+    """Everything else is text. ``parse_iso_utc`` reads a bare date as midnight and
+    accepts ``20261012``, ``2026-W42`` (Monday 12 October) and ``20261012T000000Z``,
+    so a matcher that hands it every value makes five records one.
 
-    found = _found(api, surface, "due=2026-03-01T10:00:00Z")
+    The two midnight rows are red for the missing offset only; the rest pass on
+    v0.22.0 and must keep passing. Kills the ``[T ]`` pattern gate being dropped
+    on either side."""
+    records = {
+        "date": _write(memory_dir, "day-date", "day: 2026-10-12\n"),
+        "compact": _write(memory_dir, "day-compact", "day: 20261012\n"),
+        "week": _write(memory_dir, "day-week", "day: 2026-W42\n"),
+        "basic": _write(memory_dir, "day-basic", "day: 20261012T000000Z\n"),
+        "midnight-utc": _write(memory_dir, "day-midnight-utc", "day: 2026-10-12T00:00:00Z\n"),
+        "midnight-naive": _write(memory_dir, "day-midnight-naive", "day: 2026-10-12 00:00:00\n"),
+    }
 
-    assert isinstance(found, list)
+    found = _found(api, entry)
+
+    assert sorted(found) == sorted(records[name] for name in expected)
+
+
+def test_a_stored_text_date_is_a_day_and_not_a_midnight(api, memory_dir):
+    """The same as the table above for a date stored as text, which is how a save
+    keeps it. Kills the gate being applied to the entry only."""
+    day = _write(memory_dir, "day-text", 'day: "2026-10-12"\n')
+    midnight = _write(memory_dir, "midnight-text", 'day: "2026-10-12T00:00:00Z"\n')
+
+    assert _found(api, "day=2026-10-12") == [day]
+    assert _found(api, "day=2026-10-12T00:00:00Z") == [midnight]
 
 
 # ── non-scalar values ───────────────────────────────────────────────────────
@@ -192,49 +264,43 @@ def shaped(api, memory_dir) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
 @pytest.mark.parametrize(
     "entry",
     ["owner=None", "owner=null", "owner=~", "owner=owner"],
 )
-def test_a_null_value_never_matches(api, shaped, surface, entry):
+def test_a_null_value_never_matches(api, shaped, entry):
     """Kills ``_as_text`` turning ``None`` into the string ``"None"``."""
-    assert _found(api, surface, entry) == []
+    assert _found(api, entry) == []
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
 @pytest.mark.parametrize(
     "entry",
     ["meta=alice", "meta=name", "meta=name: alice", "meta={'name': 'alice'}"],
 )
-def test_a_mapping_value_never_matches(api, shaped, surface, entry):
+def test_a_mapping_value_never_matches(api, shaped, entry):
     """Kills a mapping being matched by its keys, values or Python text."""
-    assert _found(api, surface, entry) == []
+    assert _found(api, entry) == []
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
 @pytest.mark.parametrize(
     "entry",
     ["reviewers=alice", "reviewers=name", "reviewers={'name': 'alice'}"],
 )
-def test_a_list_of_mappings_never_matches(api, shaped, surface, entry):
+def test_a_list_of_mappings_never_matches(api, shaped, entry):
     """Kills the mappings in a list being matched through their Python text or
     their keys and values."""
-    found = _found(api, surface, entry)
+    found = _found(api, entry)
 
     assert shaped["mappings"] not in found
 
 
-@pytest.mark.parametrize("surface", _SURFACES)
-def test_a_list_that_mixes_strings_and_mappings_matches_its_strings_only(
-    api, shaped, surface
-):
+def test_a_list_that_mixes_strings_and_mappings_matches_its_strings_only(api, shaped):
     """Kills a list with a non-scalar element being skipped as a whole, and a
     mapping element being matched."""
-    assert _found(api, surface, "reviewers=alice") == [shaped["mixed"]]
-    assert _found(api, surface, "reviewers=bob") == []
-    assert _found(api, surface, "reviewers=None") == []
-    assert _found(api, surface, "reviewers=['carol']") == []
+    assert _found(api, "reviewers=alice") == [shaped["mixed"]]
+    assert _found(api, "reviewers=bob") == []
+    assert _found(api, "reviewers=None") == []
+    assert _found(api, "reviewers=['carol']") == []
 
 
 # ── the MCP argument ────────────────────────────────────────────────────────
@@ -257,51 +323,37 @@ def wire(monkeypatch) -> _Recorder:
     return recorder
 
 
-def _call(tool: str, arguments: dict) -> str:
-    return asyncio.run(mcp._dispatch_tool(tool, arguments))[0].text
+def _list_with(where) -> str:
+    return asyncio.run(mcp._dispatch_tool("palinode_list", {"where": where}))[0].text
 
 
-def _sent_where(wire: _Recorder, tool: str) -> list[str]:
-    request = wire.requests[-1]
-    if tool == "palinode_list":
-        return request.url.params.get_list("where")
-    return json.loads(request.content).get("where", [])
+def _sent_where(wire: _Recorder) -> list[str]:
+    return wire.requests[-1].url.params.get_list("where")
 
 
-def _arguments(tool: str, where) -> dict:
-    return {"where": where} if tool == "palinode_list" else {"query": _KEYWORD, "where": where}
-
-
-_TOOLS = ["palinode_list", "palinode_search"]
-
-
-@pytest.mark.parametrize("tool", _TOOLS)
-def test_a_bare_string_is_one_entry(wire, tool):
+def test_a_bare_string_is_one_entry(wire):
     """Kills the bare string being iterated into characters."""
-    _call(tool, _arguments(tool, "status=open"))
+    _list_with("status=open")
 
-    assert _sent_where(wire, tool) == ["status=open"]
+    assert _sent_where(wire) == ["status=open"]
 
 
-@pytest.mark.parametrize("tool", _TOOLS)
-def test_a_json_string_array_is_decoded_into_its_entries(wire, tool):
+def test_a_json_string_array_is_decoded_into_its_entries(wire):
     """Kills ``coerce_str_array`` being dropped from the where argument."""
-    _call(tool, _arguments(tool, '["status=open", "kind=note"]'))
+    _list_with('["status=open", "kind=note"]')
 
-    assert _sent_where(wire, tool) == ["status=open", "kind=note"]
+    assert _sent_where(wire) == ["status=open", "kind=note"]
 
 
-@pytest.mark.parametrize("tool", _TOOLS)
 @pytest.mark.parametrize("empty", [None, [], "[]", ""], ids=["none", "list", "json", "text"])
-def test_an_empty_where_sends_no_filter(wire, tool, empty):
+def test_an_empty_where_sends_no_filter(wire, empty):
     """Kills an empty argument being sent, which would change the request key."""
-    _call(tool, _arguments(tool, empty))
+    _list_with(empty)
 
     assert len(wire.requests) == 1
-    assert _sent_where(wire, tool) == []
+    assert _sent_where(wire) == []
 
 
-@pytest.mark.parametrize("tool", _TOOLS)
 @pytest.mark.parametrize(
     "where",
     [
@@ -315,26 +367,23 @@ def test_an_empty_where_sends_no_filter(wire, tool, empty):
     ids=["object", "object-keyed-like-an-entry", "json-object", "json-string",
          "bare-key", "json-array-bare-key"],
 )
-def test_a_where_that_is_not_a_list_of_entries_is_refused_before_any_request(
-    wire, tool, where
-):
+def test_a_where_that_is_not_a_list_of_entries_is_refused_before_any_request(wire, where):
     """Kills the list check being dropped (an object keyed like an entry would
     pass the parser and be sent) or the entry check being dropped."""
-    text = _call(tool, _arguments(tool, where))
+    text = _list_with(where)
 
     assert text.startswith("Error:")
     assert wire.requests == []
 
 
-@pytest.mark.parametrize("tool", _TOOLS)
 @pytest.mark.parametrize(
     "item",
     [123, None, True, 1.5, ["status=open"], {"status": "open"}],
     ids=["int", "null", "bool", "float", "list", "mapping"],
 )
-def test_a_non_string_item_is_refused_before_any_request(wire, tool, item):
+def test_a_non_string_item_is_refused_before_any_request(wire, item):
     """Kills the items being stringified into an entry that passes the parser."""
-    text = _call(tool, _arguments(tool, ["status=open", item]))
+    text = _list_with(["status=open", item])
 
     assert text.startswith("Error:")
     assert wire.requests == []

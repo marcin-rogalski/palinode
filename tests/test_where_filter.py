@@ -1,4 +1,4 @@
-"""``where`` filters search and list by front matter; ``include_inbox`` lists ActionItems.
+"""``where`` filters the listing by front matter; ``include_inbox`` lists ActionItems.
 
 Two gaps, one change.
 
@@ -7,9 +7,10 @@ always skips ``inbox/`` and ``daily/`` and ``archive/``, so a saved ActionItem
 can never be listed. ``include_inbox=true`` removes ``inbox`` (and only
 ``inbox``) from that skip set.
 
-*Filtering by any front-matter key.* Search filters by ``type`` and by nothing
-else, so "the open items" can only be found by reading every hit. ``where`` is a
-list of ``key=value`` strings on search and list:
+*Filtering by any front-matter key.* ``GET /list`` filters by ``category`` and
+core flags, never by a front-matter key, so "the open items" can only be found
+by reading every row.
+``where`` is a list of ``key=value`` strings:
 
 * every entry must match (AND);
 * a scalar front-matter value matches when its string form equals the value; a
@@ -17,9 +18,9 @@ list of ``key=value`` strings on search and list:
 * a key the record does not have never matches;
 * a key must match ``^[A-Za-z_][A-Za-z0-9_-]*$``; a malformed entry is a 422.
 
-Tests marked *red* fail on v0.22.0 for the reason in their docstring; the rest
-pass on v0.22.0 and must keep passing. The surfaces (CLI, MCP, parity) are in
-``test_where_filter_surfaces.py``.
+Search takes no ``where``. Tests marked *red* fail on v0.22.0 for the reason in
+their docstring; the rest pass on v0.22.0 and must keep passing. The surfaces
+(CLI, MCP, parity) are in ``test_where_filter_surfaces.py``.
 
 Real SQLite + tmp_path through ``TestClient``, in lexical retrieval mode so no
 embedder is involved (the stub raises if anything reaches for one).
@@ -74,17 +75,6 @@ def _list(api, **params) -> list[str]:
     response = api.get("/list", params=params)
     assert response.status_code == 200, response.text
     return [row["file"] for row in response.json()]
-
-
-def _search(api, **body) -> list[str]:
-    body.setdefault("query", _KEYWORD)
-    body.setdefault("limit", 10)
-    body.setdefault("threshold", 0.0)
-    response = api.post("/search", json=body)
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    rows = payload["results"] if isinstance(payload, dict) else payload
-    return [row["rel_path"] for row in rows]
 
 
 @pytest.fixture()
@@ -231,76 +221,6 @@ def test_list_where_combines_with_include_inbox(api):
     assert listed == [open_item]
 
 
-# ── search: where ───────────────────────────────────────────────────────────
-
-def test_unfiltered_search_returns_all_three_statuses(api, three_statuses):
-    assert set(three_statuses.values()) <= set(_search(api))
-
-
-def test_search_where_status_returns_only_the_matching_record(api, three_statuses):
-    """Red: ``where`` is ignored, so all three come back."""
-    assert _search(api, where=["status=open"]) == [three_statuses["open"]]
-
-
-def test_search_where_missing_key_matches_nothing(api, three_statuses):
-    """Red: ``where`` is ignored."""
-    assert _search(api, where=["reviewer=dana"]) == []
-
-
-def test_search_where_entries_are_anded(api, tagged):
-    """Red: ``where`` is ignored."""
-    found = _search(api, where=["status=open", "entities=project/my-app"])
-
-    assert sorted(found) == sorted([tagged["open_app"], tagged["open_both"]])
-
-
-def test_search_where_list_value_matches_by_element(api, tagged):
-    """Red: ``where`` is ignored."""
-    found = _search(api, where=["entities=person/alice"])
-
-    assert sorted(found) == sorted([tagged["open_person"], tagged["open_both"]])
-
-
-def test_search_where_composes_with_types(api):
-    """Red: ``where`` is ignored."""
-    item = _save(api, "open-item", type="ActionItem", metadata={"status": "open"})
-    _save(api, "resolved-item", type="ActionItem", metadata={"status": "resolved"})
-    _save(api, "open-insight", metadata={"status": "open"})
-
-    assert _search(api, where=["status=open"], types=["ActionItem"]) == [item]
-
-
-def test_search_where_still_fills_the_limit_when_the_first_page_does_not_match(api):
-    """Red: ``where`` is ignored. Pins the over-fetch: the four strongest hits do
-    not match, so a filter applied to a page of exactly ``limit`` would return
-    nothing, not the two matching records.
-
-    The first assertion (no ``where``) shows the premise and passes on v0.22.0.
-    """
-    loud = f"{_KEYWORD} " * 30
-    for index in range(4):
-        _save(api, f"loud-{index}", content=loud, metadata={"status": "resolved"})
-    quiet = [
-        _save(api, f"quiet-{index}", content=f"{_KEYWORD} once", metadata={"status": "open"})
-        for index in range(2)
-    ]
-
-    top_two = _search(api, limit=2)
-    assert not set(top_two) & set(quiet), "premise: the loud records outrank the quiet ones"
-
-    found = _search(api, limit=2, where=["status=open"])
-
-    assert sorted(found) == sorted(quiet)
-
-
-def test_search_where_applies_to_a_recency_listing(api, three_statuses):
-    """Red: ``where`` is ignored. An empty query lists recent records instead of
-    searching, and takes the same filter."""
-    found = _search(api, query="", where=["status=open"])
-
-    assert found == [three_statuses["open"]]
-
-
 # ── booleans and values that contain "=" ────────────────────────────────────
 
 @pytest.fixture()
@@ -326,20 +246,6 @@ def test_list_where_boolean_does_not_match_python_spelling(api, flagged, key):
     assert _list(api, where=[f"{key}=False"]) == []
 
 
-@pytest.mark.parametrize("key", ["core", "reviewed"])
-def test_search_where_boolean_matches_its_lower_case_yaml_spelling(api, flagged, key):
-    """Red: ``where`` is ignored, so both records come back."""
-    assert _search(api, where=[f"{key}=true"]) == [flagged["yes"]]
-    assert _search(api, where=[f"{key}=false"]) == [flagged["no"]]
-
-
-@pytest.mark.parametrize("key", ["core", "reviewed"])
-def test_search_where_boolean_does_not_match_python_spelling(api, flagged, key):
-    """Red: ``where`` is ignored, so both records come back."""
-    assert _search(api, where=[f"{key}=True"]) == []
-    assert _search(api, where=[f"{key}=False"]) == []
-
-
 @pytest.fixture()
 def notes(api) -> dict[str, str]:
     return {
@@ -352,11 +258,6 @@ def notes(api) -> dict[str, str]:
 def test_list_where_splits_on_the_first_equals_only(api, notes):
     """Red: ``where`` is ignored, so all three come back."""
     assert _list(api, where=["note=a=b"]) == [notes["equals"]]
-
-
-def test_search_where_splits_on_the_first_equals_only(api, notes):
-    """Red: ``where`` is ignored, so all three come back."""
-    assert _search(api, where=["note=a=b"]) == [notes["equals"]]
 
 
 # ── malformed where is a 422 ────────────────────────────────────────────────
@@ -374,14 +275,6 @@ def test_malformed_where_is_rejected_by_list(api, three_statuses, entry):
     assert response.status_code == 422, response.text
 
 
-@pytest.mark.parametrize("entry", _MALFORMED)
-def test_malformed_where_is_rejected_by_search(api, three_statuses, entry):
-    """Red: the field is ignored and the search answers 200."""
-    response = api.post("/search", json={"query": _KEYWORD, "where": [entry]})
-
-    assert response.status_code == 422, response.text
-
-
 def test_one_malformed_entry_rejects_the_whole_request(api, three_statuses):
     """Red: ``where`` is ignored."""
     response = api.get("/list", params={"where": ["status=open", "no-equals"]})
@@ -393,6 +286,3 @@ def test_one_malformed_entry_rejects_the_whole_request(api, three_statuses):
 def test_well_formed_keys_are_accepted(api, three_statuses, key):
     """Passes on v0.22.0 (unknown parameters are ignored) and must keep passing."""
     assert api.get("/list", params={"where": [f"{key}=x"]}).status_code == 200
-    assert api.post(
-        "/search", json={"query": _KEYWORD, "where": [f"{key}=x"]}
-    ).status_code == 200

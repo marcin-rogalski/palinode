@@ -3,16 +3,17 @@
 The REST behaviour is in ``test_where_filter.py``. This file pins the other
 surfaces to it:
 
-* ``palinode.core.parity`` lists ``where`` (array) on ``search`` and ``list`` and
-  ``include_inbox`` (boolean) on ``list``;
-* the CLI takes a repeatable ``--where`` on ``list`` and ``search`` and
-  ``--include-inbox`` on ``list``; a malformed entry is a click usage error
-  (exit code 2) raised before any request is made;
-* the MCP tools take ``where`` (array of strings) and, on ``palinode_list``,
-  ``include_inbox``; a malformed entry is an ``Error:`` reply with no request.
+* ``palinode.core.parity`` lists ``where`` (array) and ``include_inbox`` (boolean)
+  on ``list`` and neither on ``search``;
+* the CLI takes a repeatable ``--where`` and ``--include-inbox`` on ``list``; a
+  malformed entry is a click usage error (exit code 2) raised before any request
+  is made; ``search`` has no ``--where``;
+* ``palinode_list`` takes ``where`` (array of strings) and ``include_inbox``; a
+  malformed entry is an ``Error:`` reply with no request; ``palinode_search``
+  declares no ``where`` and sends none.
 
 On the wire: ``GET /list`` carries one ``where`` query parameter per entry plus
-``include_inbox=true``; ``POST /search`` carries ``where`` as a JSON list.
+``include_inbox=true``.
 
 Tests marked *red* fail on v0.22.0 for the reason in their docstring; the rest
 pass on v0.22.0 and must keep passing. No test reaches the network: requests are
@@ -91,13 +92,9 @@ def _param(operation: str, name: str):
     return {p.name: p for p in parity.by_name(operation).canonical_params}.get(name)
 
 
-def test_search_registers_where_as_an_array_of_strings():
-    """Red: no ``where`` parameter is registered on ``search``."""
-    param = _param("search", "where")
-
-    assert param is not None
-    assert param.type == "array"
-    assert not param.required
+def test_search_registers_no_where():
+    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
+    assert _param("search", "where") is None
 
 
 def test_list_registers_where_as_an_array_of_strings():
@@ -130,13 +127,17 @@ def _schema(tool_name: str) -> dict:
     return tools[tool_name]["properties"]
 
 
-@pytest.mark.parametrize("tool_name", ["palinode_search", "palinode_list"])
-def test_mcp_tool_declares_where_as_an_array_of_strings(tool_name):
+def test_mcp_list_declares_where_as_an_array_of_strings():
     """Red: the tool schema has no ``where`` property."""
-    prop = _schema(tool_name)["where"]
+    prop = _schema("palinode_list")["where"]
 
     assert prop["type"] == "array"
     assert prop["items"]["type"] == "string"
+
+
+def test_mcp_search_declares_no_where():
+    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
+    assert "where" not in _schema("palinode_search")
 
 
 def test_mcp_list_declares_include_inbox_as_a_boolean():
@@ -171,33 +172,23 @@ def test_cli_list_sends_each_where_entry_and_the_inbox_flag(cli_recorder):
     assert request.url.params["include_inbox"] == "true"
 
 
-def test_cli_search_without_where_sends_no_where_field(cli_recorder):
-    result = _invoke("search", "release checklist", "--no-context", "--format", "json")
-
-    assert result.exit_code == 0, result.output
-    assert "where" not in cli_recorder.body()
-
-
-def test_cli_search_sends_where_as_a_json_list(cli_recorder):
-    """Red: ``--where`` is an unknown option (exit code 2)."""
+def test_cli_search_has_no_where_option(cli_recorder):
+    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
     result = _invoke(
-        "search", "release checklist", "--no-context", "--format", "json",
-        "--where", "status=open", "--where", "entities=project/my-app",
+        "search", "release checklist", "--no-context", "--where", "status=open"
     )
 
-    assert result.exit_code == 0, result.output
-    request = cli_recorder.requests[-1]
-    assert request.method == "POST"
-    assert request.url.path == "/search"
-    assert cli_recorder.body()["where"] == ["status=open", "entities=project/my-app"]
+    assert result.exit_code == 2, result.output
+    assert "No such option" in result.output
+    assert "--where" in result.output
+    assert cli_recorder.requests == []
 
 
-@pytest.mark.parametrize("command", [["list"], ["search", "release checklist", "--no-context"]])
 @pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x", "status="])
-def test_cli_malformed_where_is_a_usage_error_before_any_request(cli_recorder, command, entry):
+def test_cli_malformed_where_is_a_usage_error_before_any_request(cli_recorder, entry):
     """Red: the output never names the entry. On v0.22.0 click answers with
     ``No such option: --where``, which is also exit code 2."""
-    result = _invoke(*command, "--where", entry)
+    result = _invoke("list", "--where", entry)
 
     assert result.exit_code == 2, result.output
     assert entry in result.output
@@ -268,17 +259,6 @@ def test_cli_list_without_include_inbox_shows_no_actionitem_end_to_end(real_app)
     assert json.loads(result.output) == []
 
 
-def test_cli_search_finds_the_open_actionitem_end_to_end(real_app):
-    """Red: ``--where`` is an unknown option."""
-    result = _invoke(
-        "search", "harborlight", "--no-context", "--threshold", "0",
-        "--format", "json", "--where", "status=open",
-    )
-
-    assert result.exit_code == 0, result.output
-    assert [row["rel_path"] for row in json.loads(result.output)] == ["inbox/open-item.md"]
-
-
 # ── MCP: what goes on the wire ──────────────────────────────────────────────
 
 def test_mcp_list_without_arguments_sends_neither_parameter(mcp_recorder):
@@ -307,32 +287,18 @@ def test_mcp_list_does_not_send_include_inbox_when_false(mcp_recorder):
     assert "include_inbox" not in mcp_recorder.requests[-1].url.params
 
 
-def test_mcp_search_without_where_sends_no_where_field(mcp_recorder):
-    _call_tool("palinode_search", {"query": "release checklist"})
+def test_mcp_search_sends_no_where_whatever_the_caller_passes(mcp_recorder):
+    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
+    _call_tool("palinode_search", {"query": "release checklist", "where": ["status=open"]})
 
+    assert mcp_recorder.requests[-1].url.path == "/search"
     assert "where" not in mcp_recorder.body()
 
 
-def test_mcp_search_sends_where_as_a_json_list(mcp_recorder):
-    """Red: the argument is ignored."""
-    _call_tool("palinode_search", {
-        "query": "release checklist", "where": ["status=open", "entities=project/my-app"],
-    })
-
-    assert mcp_recorder.requests[-1].url.path == "/search"
-    assert mcp_recorder.body()["where"] == ["status=open", "entities=project/my-app"]
-
-
-@pytest.mark.parametrize("tool_name, arguments", [
-    ("palinode_list", {}),
-    ("palinode_search", {"query": "release checklist"}),
-])
 @pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x", "status="])
-def test_mcp_malformed_where_is_an_error_reply_before_any_request(
-    mcp_recorder, tool_name, arguments, entry
-):
+def test_mcp_malformed_where_is_an_error_reply_before_any_request(mcp_recorder, entry):
     """Red: the entry is ignored and the call goes to the API."""
-    text = _call_tool(tool_name, {**arguments, "where": [entry]})
+    text = _call_tool("palinode_list", {"where": [entry]})
 
     assert text.startswith("Error:")
     assert entry in text

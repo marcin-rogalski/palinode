@@ -47,6 +47,7 @@ def _as_text(value: Any) -> str | None:
 
 
 def _is_in_date_span(text: str, expected: str) -> bool:
+    text, expected = text.strip(), expected.strip()
     if not (_DATE_RE.fullmatch(text) and _DATE_RE.fullmatch(expected)):
         return False
     # As in_date_window(text, expected, expected): a bare date spans its whole UTC day.

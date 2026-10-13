@@ -177,8 +177,12 @@ class _RecordingAPI:
         return self
 
     def json(self):
+        # Reports the project it was sent, as the API does with context enabled.
+        context = (self.calls[-1][1] or {}).get("context") or []
+        project = next((ref for ref in context if ref.startswith("project/")), None)
         return {"results": [], "receipt": {"bundle_id": "b1", "evaluated_at": "t1"},
-                "text": "", "project": None, "project_resolved_by": "none"}
+                "text": "", "project": project,
+                "project_resolved_by": "explicit" if project else "none"}
 
 
 def _sse_payload(response) -> dict:

@@ -70,8 +70,8 @@ def test_the_mcp_surface_claims_no_similarity_for_a_keyword_only_hit() -> None:
 
 def test_the_cli_score_flag_shows_similarity_not_rank() -> None:
     hit = {"file": "notes/a.md", "score": 1.0, "raw_score": ABSENT_ANSWER_COSINE, "snippet": "body"}
-    # The CLI asks for the delivery receipt, so the client returns a pair.
-    with patch("palinode.cli.search.api_client.search", return_value=([hit], None)):
+    # The CLI asks for the delivery receipt, so the client returns a triple.
+    with patch("palinode.cli.search.api_client.search", return_value=([hit], None, {})):
         result = CliRunner().invoke(search, ["anything", "--score", "--format", "text"])
     assert "[42% match]" in result.output
     assert "[1.00]" not in result.output

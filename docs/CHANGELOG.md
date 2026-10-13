@@ -10,6 +10,8 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **The server's config decides whether search is scoped to a project.** `palinode search` and the MCP `palinode_search` tool resolve a project from the working directory under the client's own config and send it in the search `context`. A client that read a different config from the server's, such as a shell without `PALINODE_DIR` falling back to the built-in `context.enabled: true`, scoped a search that the server's `context.enabled: false` leaves unscoped. Now an API server with `context.enabled: false` ignores the project in any `context` and reports `project_resolved_by: disabled`, and the CLI and MCP show the scope the server applied. Where the server enables context, nothing changes ([#246](https://github.com/phasespace-labs/palinode/issues/246)).
+
 ### Removed
 
 ### Security

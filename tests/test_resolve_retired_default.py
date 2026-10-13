@@ -405,7 +405,7 @@ def test_cli_search_forwards_include_retired(monkeypatch):
 
     def _fake(query, **kw):
         sent.update(kw)
-        return [], None
+        return [], None, {}
 
     monkeypatch.setattr(api_client, "search", _fake)
     result = CliRunner().invoke(

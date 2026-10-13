@@ -81,8 +81,8 @@ def _cli(result: dict) -> str:
     # The API hands the CLI a memory-relative title; an absolute tmp path would
     # wrap the 80-column rich console and split a label across lines.
     hit = dict(result, file=os.path.relpath(result["file_path"], config.memory_dir))
-    # The CLI asks for the delivery receipt, so the client returns a pair.
-    with patch("palinode.cli.search.api_client.search", return_value=([hit], None)):
+    # The CLI asks for the delivery receipt, so the client returns a triple.
+    with patch("palinode.cli.search.api_client.search", return_value=([hit], None, {})):
         out = CliRunner().invoke(cli_search, ["anything", "--format", "text"])
     assert out.exit_code == 0, out.output
     # The rich console soft-wraps at 80 columns; the labels are asserted as

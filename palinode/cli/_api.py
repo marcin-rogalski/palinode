@@ -117,12 +117,14 @@ class PalinodeAPI:
         receipt: bool = False,
         include_other_projects: bool | None = None,
         include_retired: bool = False,
-    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any] | None]:
-        """Search memory. ``receipt=True`` returns ``(results, receipt)`` instead.
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, Any] | None, dict[str, Any]]:
+        """Search memory. ``receipt=True`` returns ``(results, receipt, applied)`` instead.
 
         The receipt is the delivery receipt (``palinode.core.receipt``) for
-        this response. A bare list back from the server means an API older than
-        receipts: the receipt is then ``None`` and callers render without it.
+        this response, and ``applied`` the ``project`` / ``project_resolved_by``
+        the server reports it scoped the search to. A bare list back from the
+        server means an API older than receipts: the receipt is then ``None``,
+        ``applied`` is empty, and callers render without them.
         """
         # ADR-010: forward the full canonical search surface.
         # Non-None params land in the body verbatim; None means "API default".
@@ -167,8 +169,9 @@ class PalinodeAPI:
         if not receipt:
             return data
         if isinstance(data, dict):
-            return data.get("results") or [], data.get("receipt")
-        return data, None
+            applied = {k: data[k] for k in ("project", "project_resolved_by") if k in data}
+            return data.get("results") or [], data.get("receipt"), applied
+        return data, None, {}
 
     def save(
         self,

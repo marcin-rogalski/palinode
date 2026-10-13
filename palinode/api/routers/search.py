@@ -466,9 +466,11 @@ def search_api(
     # out. One resolution decides all three, so what the response reports is
     # always what the search applied — an explicit ``context`` (including an
     # empty one) is never overridden here, which is why the substitution is
-    # guarded on the field being absent rather than on it being falsy.
+    # guarded on the field being absent rather than on it being falsy. The one
+    # exception is this server's ``context.enabled: false``, which no caller's
+    # ``context`` can turn back on.
     scope = effective_project_scope(req.context)
-    if req.context is None:
+    if req.context is None or scope.basis == "disabled":
         req.context = scope.context
     decision = evaluate_capture_policy(
         "recall",

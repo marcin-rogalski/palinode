@@ -384,7 +384,7 @@ def test_every_surface_carries_the_same_bundle_id(client, mem, monkeypatch):
     class _Fake:
         def search(self, query, **kwargs):
             assert kwargs.get("receipt") is True
-            return rest["results"], rest["receipt"]
+            return rest["results"], rest["receipt"], {}
 
     monkeypatch.setattr(cli_search, "api_client", _Fake())
     monkeypatch.setattr(cli_search, "_cli_resolve_context", lambda: None)

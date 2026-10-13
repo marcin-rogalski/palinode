@@ -187,6 +187,16 @@ class ProjectResolution:
         """One line: which project this delivery was scoped to, and why."""
         return f"Scope: {self.project or 'none'} ({self.basis})"
 
+    def to_applied(self, delivery: dict[str, Any]) -> ProjectResolution:
+        """The scope a search delivery says the server applied.
+
+        This resolution stands when the server applied the same project or reports none.
+        """
+        basis = delivery.get("project_resolved_by")
+        if not basis or delivery.get("project") == self.project:
+            return self
+        return ProjectResolution(delivery.get("project"), str(basis))
+
 
 def ambient_cwd() -> str:
     """The client CWD hint takes precedence over its process directory."""

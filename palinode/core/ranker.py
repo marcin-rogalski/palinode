@@ -37,13 +37,18 @@ and friends keep resolving for existing callers and tests.
 from __future__ import annotations
 
 import math
-import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from palinode.core.config import config
 
-_DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+def _is_date_only(text: str) -> bool:
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def parse_iso_utc(value: Any, *, end_of_day: bool = False) -> datetime | None:
@@ -55,9 +60,11 @@ def parse_iso_utc(value: Any, *, end_of_day: bool = False) -> datetime | None:
     date window compares parsed instants instead. A value without an offset is
     read as UTC, as elsewhere in palinode. A bare date is midnight UTC, or the
     last instant of that day when ``end_of_day`` is set, so an inclusive upper
-    bound of ``2026-10-12`` keeps records from that day.
+    bound of ``2026-10-12`` keeps records from that day. That holds for every
+    date-only spelling ISO accepts, such as ``20261012`` and ``2026-W42-1``.
 
-    Returns None for an empty or non-ISO value.
+    Returns None for an empty value, a non-ISO value, or one whose UTC reading
+    falls outside years 1 to 9999.
     """
     if value is None:
         return None
@@ -66,13 +73,13 @@ def parse_iso_utc(value: Any, *, end_of_day: bool = False) -> datetime | None:
         return None
     try:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
+        if end_of_day and _is_date_only(text):
+            dt += timedelta(days=1, microseconds=-1)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
+    except (ValueError, OverflowError):
         return None
-    if end_of_day and _DATE_ONLY.fullmatch(text):
-        dt += timedelta(days=1, microseconds=-1)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC)
 
 
 def in_date_window(updated: Any, date_after: str | None, date_before: str | None) -> bool:

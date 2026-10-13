@@ -160,6 +160,33 @@ def _normalize_claims_or_reject(raw: Any, memory_ref: str) -> list[dict[str, Any
         raise SaveValidationError(str(exc))
 
 
+# Derived on every save, or carried by a rule of their own; never copied by the carry.
+_APPEND_NEVER_CARRIED = frozenset({
+    "id", "category", "type", "content_hash", "last_updated", "auditable_memory",
+    "source", "created_at", "update_policy", "epistemic", "ttl",
+})
+
+
+def _carry_prior_frontmatter(
+    frontmatter_dict: dict[str, Any], prior: dict[str, Any], *, has_entities: bool
+) -> None:
+    never_carried = set(_APPEND_NEVER_CARRIED)
+    if config.ku_compat.enabled:
+        # ku_compat derives these; a carried copy would block the re-derivation.
+        never_carried.add("ku_version")
+        if "status" in frontmatter_dict:
+            never_carried.add("lifecycle")
+    prior_entities = prior.get("entities")
+    if not has_entities and isinstance(prior_entities, list):
+        # `project` is sugar for one entity, so it joins the carried list.
+        frontmatter_dict["entities"] = prior_entities + [
+            e for e in frontmatter_dict["entities"] if e not in prior_entities
+        ]
+    for key, value in prior.items():
+        if key not in never_carried and key not in frontmatter_dict:
+            frontmatter_dict[key] = value
+
+
 def _holds_this_content(path: str, incoming_hash: str) -> bool:
     """True when *path* already holds exactly this content.
 
@@ -278,7 +305,8 @@ def save_memory(
         update_policy: ADR-015 §2.1 write-semantics axis, and a real write
             semantic: ``"append"`` against an existing ``(category, slug)``
             adds to that document (prior body kept verbatim, new content under
-            a dated append heading), ``"replace"`` overwrites it in place and
+            a dated append heading, every prior frontmatter key this save does
+            not set kept), ``"replace"`` overwrites it in place and
             marks it a living document consolidation must not fork into
             history. Sticky frontmatter — carried forward from the existing
             file when omitted. A save that declares *no* policy overwrites, as
@@ -577,6 +605,7 @@ def save_memory(
     # composition; left empty on any read failure, so an unreadable existing
     # file degrades to a plain write rather than to a half-composed one.
     _existing_body = ""
+    _existing_meta: dict[str, Any] = {}
     if os.path.exists(file_path):
         try:
             from palinode.core import parser as _parser
@@ -701,6 +730,14 @@ def save_memory(
     _expiry_err = _normalize_expiry(frontmatter_dict, now_iso=_now_iso)
     if _expiry_err:
         raise SaveValidationError(_expiry_err)
+    # After the expiry so a new ttl beats the carried expires_at, and before the
+    # ku_compat block, which fills lifecycle only when it is absent.
+    if save_outcome == "appended":
+        _carry_prior_frontmatter(
+            frontmatter_dict,
+            _existing_meta,
+            has_entities=bool(entities) or bool((metadata or {}).get("entities")),
+        )
     if core is not None:
         frontmatter_dict["core"] = core
     if _effective_confidence is not None:
@@ -806,7 +843,12 @@ def save_memory(
 
     # Layer 2 wiki contract: auto-append See also footer for any entities
     # not already referenced as [[wikilinks]] in the body.
-    body_content = _apply_wiki_footer(effective_content, normalized_entities)
+    footer_entities = normalized_entities
+    if save_outcome == "appended" and isinstance(frontmatter_dict["entities"], list):
+        # The composed body lost the prior footer, so rebuild it from the carried list;
+        # only strings name a page, and the list may hold whatever a caller sent.
+        footer_entities = [e for e in frontmatter_dict["entities"] if isinstance(e, str)]
+    body_content = _apply_wiki_footer(effective_content, footer_entities)
 
     doc = f"---\n{yaml.safe_dump(frontmatter_dict, default_flow_style=False, allow_unicode=True)}---\n\n{body_content}\n"
 

@@ -4,13 +4,13 @@ The REST behaviour is in ``test_where_filter.py``. This file pins the other
 surfaces to it:
 
 * ``palinode.core.parity`` lists ``where`` (array) and ``include_inbox`` (boolean)
-  on ``list`` and neither on ``search``;
+  on ``list``, and no ``include_inbox`` on ``search``;
 * the CLI takes a repeatable ``--where`` and ``--include-inbox`` on ``list``; a
   malformed entry is a click usage error (exit code 2) raised before any request
-  is made; ``search`` has no ``--where``;
+  is made;
 * ``palinode_list`` takes ``where`` (array of strings) and ``include_inbox``; a
-  malformed entry is an ``Error:`` reply with no request; ``palinode_search``
-  declares no ``where`` and sends none.
+  malformed entry is an ``Error:`` reply with no request. Search's are in
+  ``test_search_where_surfaces.py``.
 
 On the wire: ``GET /list`` carries one ``where`` query parameter per entry plus
 ``include_inbox=true``.
@@ -92,11 +92,6 @@ def _param(operation: str, name: str):
     return {p.name: p for p in parity.by_name(operation).canonical_params}.get(name)
 
 
-def test_search_registers_no_where():
-    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
-    assert _param("search", "where") is None
-
-
 def test_list_registers_where_as_an_array_of_strings():
     """Red: no ``where`` parameter is registered on ``list``."""
     param = _param("list", "where")
@@ -135,11 +130,6 @@ def test_mcp_list_declares_where_as_an_array_of_strings():
     assert prop["items"]["type"] == "string"
 
 
-def test_mcp_search_declares_no_where():
-    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
-    assert "where" not in _schema("palinode_search")
-
-
 def test_mcp_list_declares_include_inbox_as_a_boolean():
     """Red: the tool schema has no ``include_inbox`` property."""
     assert _schema("palinode_list")["include_inbox"]["type"] == "boolean"
@@ -170,18 +160,6 @@ def test_cli_list_sends_each_where_entry_and_the_inbox_flag(cli_recorder):
     assert request.url.path == "/list"
     assert request.url.params.get_list("where") == ["status=open", "entities=project/my-app"]
     assert request.url.params["include_inbox"] == "true"
-
-
-def test_cli_search_has_no_where_option(cli_recorder):
-    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
-    result = _invoke(
-        "search", "release checklist", "--no-context", "--where", "status=open"
-    )
-
-    assert result.exit_code == 2, result.output
-    assert "No such option" in result.output
-    assert "--where" in result.output
-    assert cli_recorder.requests == []
 
 
 @pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x", "status="])
@@ -285,14 +263,6 @@ def test_mcp_list_does_not_send_include_inbox_when_false(mcp_recorder):
     _call_tool("palinode_list", {"include_inbox": False})
 
     assert "include_inbox" not in mcp_recorder.requests[-1].url.params
-
-
-def test_mcp_search_sends_no_where_whatever_the_caller_passes(mcp_recorder):
-    """Search takes no ``where``. Passes on v0.22.0 and must keep passing."""
-    _call_tool("palinode_search", {"query": "release checklist", "where": ["status=open"]})
-
-    assert mcp_recorder.requests[-1].url.path == "/search"
-    assert "where" not in mcp_recorder.body()
 
 
 @pytest.mark.parametrize("entry", ["no-equals", "=value", "bad key=x", "1abc=x", "status="])

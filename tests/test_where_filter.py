@@ -18,9 +18,10 @@ by reading every row.
 * a key the record does not have never matches;
 * a key must match ``^[A-Za-z_][A-Za-z0-9_-]*$``; a malformed entry is a 422.
 
-Search takes no ``where``. Tests marked *red* fail on v0.22.0 for the reason in
-their docstring; the rest pass on v0.22.0 and must keep passing. The surfaces
-(CLI, MCP, parity) are in ``test_where_filter_surfaces.py``.
+Search takes ``where`` too; its tests are in ``test_search_where.py``. Tests
+marked *red* fail on v0.22.0 for the reason in their docstring; the rest pass on
+v0.22.0 and must keep passing. The surfaces (CLI, MCP, parity) are in
+``test_where_filter_surfaces.py``.
 
 Real SQLite + tmp_path through ``TestClient``, in lexical retrieval mode so no
 embedder is involved (the stub raises if anything reaches for one).

@@ -63,7 +63,12 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     help="Show the version banner and exit.",
 )
 def main():
-    """Palinode — persistent agent memory."""
+    """Palinode — persistent agent memory.
+
+    PALINODE_DIR names the memory directory and the palinode.config.yaml read
+    from it. Unset, it is ~/palinode. With no config file found, Palinode runs
+    on built-in defaults and says so.
+    """
     _cli_logger.info(
         "palinode.config: memory_dir=%s db_path=%s",
         config.memory_dir,

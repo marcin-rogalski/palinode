@@ -162,6 +162,9 @@ class PrimaryEmbeddingConfig:
 class EmbeddingsConfig:
     """Embedding backend configuration."""
     primary: PrimaryEmbeddingConfig = field(default_factory=PrimaryEmbeddingConfig)
+    # For an embedder slower than the client's timeout: /save returns after FTS,
+    # the watcher's next pass embeds. Override via PALINODE_DEFER_EMBED_ON_SAVE.
+    defer_embed_on_save: bool = False
 
 @dataclass
 class AutoSummaryConfig:
@@ -1051,6 +1054,18 @@ def load_config() -> Config:
         cfg.embeddings.primary.url = os.environ["OLLAMA_URL"]
     if "EMBEDDING_MODEL" in os.environ:
         cfg.embeddings.primary.model = os.environ["EMBEDDING_MODEL"]
+    if "PALINODE_DEFER_EMBED_ON_SAVE" in os.environ:
+        flag = os.environ["PALINODE_DEFER_EMBED_ON_SAVE"].strip().lower()
+        if flag in {"1", "true", "yes", "on"}:
+            cfg.embeddings.defer_embed_on_save = True
+        elif flag in {"0", "false", "no", "off"}:
+            cfg.embeddings.defer_embed_on_save = False
+        else:
+            _logger.warning(
+                "ignoring malformed env override; keeping configured value "
+                "var=PALINODE_DEFER_EMBED_ON_SAVE value=%r",
+                os.environ["PALINODE_DEFER_EMBED_ON_SAVE"],
+            )
     if "PALINODE_API_HOST" in os.environ:
         cfg.services.api.host = os.environ["PALINODE_API_HOST"]
     if "PALINODE_API_PORT" in os.environ:

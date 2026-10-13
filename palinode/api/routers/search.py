@@ -4,15 +4,13 @@ import re
 import logging
 from typing import Any, Callable, Literal
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from palinode.core import store, embedder
 from palinode.core.config import config
 from palinode.core.parity import CATEGORIES, MEMORY_TYPES, RESOLVE_MODES, TIERS
 from palinode.core.path_guard import to_rel_path
-from palinode.core.where import parse_where
-from palinode.api._util import (
-    WhereEntries, _retrieval_logger, _safe_500, effective_project_scope,
-)
+from palinode.core.ranker import parse_iso_utc
+from palinode.api._util import _retrieval_logger, _safe_500, effective_project_scope
 from palinode.api.rate_limit import _RATE_LIMIT_SEARCH, _check_rate_limit
 from palinode.api.search_helpers import (
     _apply_tier,
@@ -23,7 +21,6 @@ from palinode.api.search_helpers import (
     _filter_min_priority,
     _filter_type_deny,
     _filter_types,
-    _filter_where,
     _read_memory_body,
     _rerank_with_preprocessing,
     _resolve_snippet_max_chars,
@@ -193,9 +190,6 @@ class SearchRequest(BaseModel):
     # are excluded after fetch. Takes precedence: a result present in both `types`
     # and `type_deny` is dropped.
     type_deny: list[str] | None = None
-    # Applied with the type filters. Unset (not []) by default so the receipt's
-    # request key is unchanged.
-    where: WhereEntries = None
     min_priority: int | None = Field(default=None, ge=1, le=5)
     # relative recency window. If set, derives an effective `date_after`
     # of `now - since_days` days. Combined with explicit `date_after` by taking
@@ -247,6 +241,18 @@ class SearchRequest(BaseModel):
     # them too, each labelled with its own project under ``other_project``.
     # Unset (not False) by default so the receipt's request key is unchanged.
     include_other_projects: bool | None = None
+
+    @field_validator("date_after", "date_before")
+    @classmethod
+    def _date_bound_is_iso(cls, value: str | None) -> str | None:
+        # The window compares parsed instants; a bound that does not parse
+        # would otherwise drop out of the filter silently.
+        if value is not None and value.strip() and parse_iso_utc(value) is None:
+            raise ValueError(
+                "must be an ISO-8601 date or timestamp, "
+                "e.g. 2026-10-12 or 2026-10-12T20:00:00-05:00"
+            )
+        return value
 
 
 def _attach_evidence(results: list[dict[str, Any]], req: "SearchRequest", chain) -> None:
@@ -434,7 +440,7 @@ def search_api(
     #   injection surface.
     # - Result sets are bounded: req.limit (capped server-side via
     #   config.search.default_limit when unset), with an internal
-    #   over-fetch factor of 5x when a `types` or `where` filter is active. The
+    #   over-fetch factor of 5x when `types` filter is active. The
     #   over-fetch ceiling is itself bounded by the underlying SQL
     #   LIMIT clause.
     # - FTS5 query string is sanitized via store.sanitize_fts_query()
@@ -468,8 +474,6 @@ def search_api(
         client_ip = request.client.host if request.client else "unknown"
         if not _check_rate_limit(client_ip, "search", _RATE_LIMIT_SEARCH):
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    # Before the try, which turns any error into a 500; the model already refused a malformed entry.
-    where_conditions = parse_where(req.where)
     try:
         effective_date_after = _compute_effective_date_after(req)
         limit = req.limit or config.search.default_limit
@@ -485,7 +489,7 @@ def search_api(
         # empty query → recency-only mode. Skip embedding, query chunks
         # directly ordered by created_at desc, apply types/date_after filter.
         if not req.query.strip():
-            recent_limit = limit * 5 if (req.min_priority or req.where) else limit
+            recent_limit = limit * 5 if req.min_priority else limit
             recent_other: set[str] = set()
             recent = _fetch_visible(
                 scope_chain,
@@ -503,7 +507,6 @@ def search_api(
             # apply type_deny post-fetch (list_recent does allow-filter
             # types, but has no deny param — mirror the same pattern as below).
             recent = _filter_type_deny(recent, req.type_deny)
-            recent = _filter_where(recent, where_conditions)
             recent = _filter_min_priority(recent, req.min_priority)
             recent = recent[:limit]
             # enrich with snippet so MCP callers stay within budget.
@@ -551,11 +554,9 @@ def search_api(
         # importance nudge while still recording recall_count/last_recalled.
         recall_mode = "passive" if req.mode == "passive" else "explicit"
 
-        # Over-fetch when a post-fetch filter is in play so we still have a chance
-        # of returning `limit` results after it.
-        store_limit = (
-            limit * 5 if (req.types or req.type_deny or req.where or req.min_priority) else limit
-        )
+        # Over-fetch when types filter is in play so we still have a chance of
+        # returning `limit` results after the post-fetch type filter.
+        store_limit = limit * 5 if (req.types or req.type_deny or req.min_priority) else limit
 
         # `or` treats an explicit threshold=0.0 (a legitimate "no floor"
         # request) as falsy and silently reinstates the default.
@@ -639,7 +640,6 @@ def search_api(
         # lists is excluded.
         results = _filter_types(results, req.types)
         results = _filter_type_deny(results, req.type_deny)
-        results = _filter_where(results, where_conditions)
         results = _filter_min_priority(results, req.min_priority)
         final = results[:limit]
         if query_emb is not None and not use_hybrid:

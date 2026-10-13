@@ -131,7 +131,7 @@ def test_cli_api_client_threads_update_policy():
             return {"file_path": "/x", "id": "inbox-x"}
 
     class _FakeClient:
-        def post(self, path, json=None, params=None):
+        def post(self, path, json=None, params=None, timeout=None):
             captured["json"] = json
             return _FakeResp()
 

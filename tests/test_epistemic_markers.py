@@ -171,7 +171,7 @@ def test_cli_api_client_threads_epistemic():
             return {"file_path": "/x", "id": "insights-x"}
 
     class _FakeClient:
-        def post(self, path, json=None, params=None):
+        def post(self, path, json=None, params=None, timeout=None):
             captured["json"] = json
             return _FakeResp()
 
@@ -196,7 +196,7 @@ def test_cli_api_client_omits_epistemic_when_absent():
             return {"file_path": "/x", "id": "insights-x"}
 
     class _FakeClient:
-        def post(self, path, json=None, params=None):
+        def post(self, path, json=None, params=None, timeout=None):
             captured["json"] = json
             return _FakeResp()
 

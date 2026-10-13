@@ -52,6 +52,7 @@ from palinode.core.config import ToolSurface, config, validate_tool_surface
 from palinode.core.defaults import (
     CONSOLIDATION_TIMEOUT_SECONDS as _CONSOLIDATE_TIMEOUT,
     SAVE_SOURCE_HEADER as _SOURCE_HEADER,
+    SAVE_TIMEOUT_SECONDS as _SAVE_TIMEOUT,
     SESSION_END_TIMEOUT_SECONDS as _SESSION_END_TIMEOUT,
     _SESSION_END_TIMEOUT_SENTINEL as _SENTINEL,
 )
@@ -2945,7 +2946,7 @@ async def _tool_save(arguments: dict[str, Any]) -> list[types.TextContent]:
     # `source` lets the X-Palinode-Source header carry attribution.
     body.update(build_payload(SAVE_PARAMS, arguments))
 
-    resp = await _post("/save", json=body)
+    resp = await _post("/save", json=body, timeout=_SAVE_TIMEOUT)
     if resp.status_code != 200:
         return _text(f"Save failed: {resp.text}")
     data = resp.json()
@@ -2954,7 +2955,10 @@ async def _tool_save(arguments: dict[str, Any]) -> list[types.TextContent]:
     # write failed — these are warnings, not save failures.
     warnings: list[str] = []
     if data.get("retrieval_mode") != "lexical" and not data.get("indexed_vec", True):
-        warnings.append("vec index write failed (chunk absent from vector search)")
+        if str(data.get("index_error") or "").startswith("embed deferred"):
+            warnings.append("embed deferred (keyword-searchable now, vectors on the next index pass)")
+        else:
+            warnings.append("vec index write failed (chunk absent from vector search)")
     if not data.get("indexed_fts", True):
         warnings.append("FTS5 sync failed (periodic rebuild will recover)")
     if not data.get("git_committed", True):

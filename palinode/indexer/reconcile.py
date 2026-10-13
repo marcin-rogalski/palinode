@@ -336,7 +336,7 @@ class Diff:
     error: str | None = None
 
 
-def apply(p: Plan, embedder: Any = _embedder) -> Diff:
+def apply(p: Plan, embedder: Any = _embedder, *, defer_embed: bool = False) -> Diff:
     """Embed and write a plan in one transaction. Fail-closed on embed outage.
 
     In embedding mode, every section in ``to_index`` must embed; the first
@@ -350,7 +350,7 @@ def apply(p: Plan, embedder: Any = _embedder) -> Diff:
     itself if the model stops rejecting the input. In cold-defer mode no
     embed is attempted — all sections are written FTS-only and the pass
     commits, which is the designed keyword-searchable-now degradation, not a
-    failure.
+    failure. ``defer_embed=True`` asks for that mode without probing.
     """
     state = p.state
     diff = Diff(unchanged=p.unchanged)
@@ -359,8 +359,10 @@ def apply(p: Plan, embedder: Any = _embedder) -> Diff:
         return diff
 
     lexical = config.search.retrieval_mode == "lexical"
-    deferred = lexical or _embeds_deferred(get_ollama_client())
-    diff.deferred = deferred
+    deferred = lexical or defer_embed or _embeds_deferred(get_ollama_client())
+    # Only a pass with sections to write defers anything; a metadata-only
+    # re-save keeps its vectors and must not report them missing.
+    diff.deferred = deferred and bool(p.to_index)
     metadata_json = json.dumps(state.metadata, default=str)
     now = store.utc_now_z()
 
@@ -522,8 +524,12 @@ def apply(p: Plan, embedder: Any = _embedder) -> Diff:
         return diff
     if deferred and p.to_index:
         diff.vec_ok = False
+        reason = (
+            "requested by the caller" if defer_embed
+            else "probe failed (cold or absent embedder)"
+        )
         diff.error = (
-            "embed deferred: probe failed (cold or absent embedder); "
+            f"embed deferred: {reason}; "
             "rows are keyword-searchable now, re-embed follows"
         )
         logger.info(
@@ -534,6 +540,6 @@ def apply(p: Plan, embedder: Any = _embedder) -> Diff:
     return diff
 
 
-def reconcile(file_path: str, content: str) -> Diff:
+def reconcile(file_path: str, content: str, *, defer_embed: bool = False) -> Diff:
     """derive → plan → apply. The whole write path for one file."""
-    return apply(plan(derive(file_path, content)))
+    return apply(plan(derive(file_path, content)), defer_embed=defer_embed)

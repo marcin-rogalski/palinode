@@ -6,6 +6,7 @@ from palinode.core.config import config
 from palinode.core.defaults import (
     CONSOLIDATION_TIMEOUT_SECONDS,
     SAVE_SOURCE_HEADER,
+    SAVE_TIMEOUT_SECONDS,
     SESSION_END_TIMEOUT_SECONDS,
     _SESSION_END_TIMEOUT_SENTINEL,
 )
@@ -226,7 +227,9 @@ class PalinodeAPI:
             )
         )
         params = {"sync": "true"} if sync else None
-        response = self.client.post("/save", json=payload, params=params)
+        response = self.client.post(
+            "/save", json=payload, params=params, timeout=SAVE_TIMEOUT_SECONDS
+        )
         response.raise_for_status()
         return response.json()
 

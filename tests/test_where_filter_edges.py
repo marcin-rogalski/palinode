@@ -6,9 +6,10 @@ than one way to go wrong:
 
 * a timestamp is matched as an instant: the ``T``, space, ``Z`` and offset
   spellings select the same record on ``GET /list``, for a value stored as text
-  and for one stored as a YAML timestamp, and a value with no offset is UTC. Only
-  a date and a time are timestamps: a bare date, ``20261012`` and ``2026-W42``
-  are compared as text, so none of them equals ``2026-10-12`` or a midnight;
+  and for one stored as a YAML timestamp, and a value with no offset is UTC. A bare
+  date is a day: it matches any time on it, and as a stored value it is midnight.
+  Only dates written with dashes are read so: ``20261012`` and ``2026-W42`` are
+  compared as text;
 * the ``palinode_list`` ``where`` argument is a list, a bare string or a
   JSON-string array; an object or an item that is not a string is refused naming
   the problem, with no request made;
@@ -202,48 +203,57 @@ def test_a_list_of_timestamps_matches_by_element_as_an_instant(api, memory_dir, 
     assert _found(api, f"due={spelling}") == [path]
 
 
-@pytest.mark.parametrize(
-    "entry, expected",
-    [
-        ("day=2026-10-12", ["date"]),
-        ("day=20261012", ["compact"]),
-        ("day=2026-W42", ["week"]),
-        ("day=20261012T000000Z", ["basic"]),
-        ("day=2026-10-12T00:00:00Z", ["midnight-utc", "midnight-naive"]),
-        ("day=2026-10-12 00:00:00", ["midnight-utc", "midnight-naive"]),
-        ("day=2026-10-12T00:00:00", ["midnight-utc", "midnight-naive"]),
-    ],
-)
-def test_only_a_date_and_a_time_are_compared_as_instants(api, memory_dir, entry, expected):
-    """Everything else is text. ``parse_iso_utc`` reads a bare date as midnight and
-    accepts ``20261012``, ``2026-W42`` (Monday 12 October) and ``20261012T000000Z``,
-    so a matcher that hands it every value makes five records one.
-
-    The two midnight rows are red for the missing offset only; the rest pass on
-    v0.22.0 and must keep passing. Kills the ``[T ]`` pattern gate being dropped
-    on either side."""
-    records = {
+@pytest.fixture()
+def days(api, memory_dir) -> dict[str, str]:
+    """``day`` in the spellings a date takes, around 12 October 2026 (UTC)."""
+    return {
         "date": _write(memory_dir, "day-date", "day: 2026-10-12\n"),
+        "text-date": _write(memory_dir, "day-text-date", 'day: "2026-10-12"\n'),
+        "midnight-utc": _write(memory_dir, "day-midnight-utc", "day: 2026-10-12T00:00:00Z\n"),
+        "midnight-naive": _write(memory_dir, "day-midnight-naive", "day: 2026-10-12 00:00:00\n"),
+        "ten": _write(memory_dir, "day-ten", "day: 2026-10-12T10:00:00Z\n"),
+        "last-second": _write(memory_dir, "day-last-second", "day: 2026-10-12T23:59:59Z\n"),
+        "next-day": _write(memory_dir, "day-next-day", "day: 2026-10-13T00:00:00Z\n"),
         "compact": _write(memory_dir, "day-compact", "day: 20261012\n"),
         "week": _write(memory_dir, "day-week", "day: 2026-W42\n"),
         "basic": _write(memory_dir, "day-basic", "day: 20261012T000000Z\n"),
-        "midnight-utc": _write(memory_dir, "day-midnight-utc", "day: 2026-10-12T00:00:00Z\n"),
-        "midnight-naive": _write(memory_dir, "day-midnight-naive", "day: 2026-10-12 00:00:00\n"),
     }
 
+
+_THE_DAY = ["date", "text-date", "midnight-utc", "midnight-naive", "ten", "last-second"]
+_MIDNIGHT = ["date", "text-date", "midnight-utc", "midnight-naive"]
+
+
+@pytest.mark.parametrize(
+    "entry, expected",
+    [
+        ("day=2026-10-12", _THE_DAY),
+        ("day=2026-10-13", ["next-day"]),
+        ("day=2026-10-12T00:00:00Z", _MIDNIGHT),
+        ("day=2026-10-12T00:00:00", _MIDNIGHT),
+        ("day=2026-10-12 00:00:00+00:00", _MIDNIGHT),
+        ("day=2026-10-12T02:00:00+02:00", _MIDNIGHT),
+        ("day=2026-10-12T10:00:00Z", ["ten"]),
+        ("day=2026-10-12T23:59:59Z", ["last-second"]),
+        ("day=20261012", ["compact"]),
+        ("day=2026-W42", ["week"]),
+        ("day=20261012T000000Z", ["basic"]),
+    ],
+)
+def test_dates_and_timestamps_read_as_the_date_window_reads_them(
+    api, days, entry, expected
+):
+    """A date or a timestamp V matches as ``in_date_window(stored, V, V)`` keeps it:
+    a timestamp V only that instant, a bare date V any time on that UTC day, and a
+    stored bare date is midnight UTC. ``20261012``, ``2026-W42`` (Monday 12 October)
+    and ``20261012T000000Z`` are text, which the window would read as dates.
+
+    Kills the date gate being dropped on either side, a bare date V read as one
+    instant or a timestamp V read as a day, a stored bare date left as text, and
+    the end of the day being a day early or late."""
     found = _found(api, entry)
 
-    assert sorted(found) == sorted(records[name] for name in expected)
-
-
-def test_a_stored_text_date_is_a_day_and_not_a_midnight(api, memory_dir):
-    """The same as the table above for a date stored as text, which is how a save
-    keeps it. Kills the gate being applied to the entry only."""
-    day = _write(memory_dir, "day-text", 'day: "2026-10-12"\n')
-    midnight = _write(memory_dir, "midnight-text", 'day: "2026-10-12T00:00:00Z"\n')
-
-    assert _found(api, "day=2026-10-12") == [day]
-    assert _found(api, "day=2026-10-12T00:00:00Z") == [midnight]
+    assert sorted(found) == sorted(days[name] for name in expected)
 
 
 # ── non-scalar values ───────────────────────────────────────────────────────

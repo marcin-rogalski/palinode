@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from palinode.core.config import config
 
@@ -158,6 +158,18 @@ def _priority_value(metadata: Any) -> int:
     return priority if 1 <= priority <= 5 else 3
 
 
+def _best_visible_score(
+    rows: list[dict[str, Any]],
+    score: Callable[[dict[str, Any]], float],
+    visible: Callable[[dict[str, Any]], bool] | None,
+) -> float:
+    """The best score among ``rows`` that ``visible`` admits; 0.0 when none does."""
+    for r in sorted(rows, key=score, reverse=True):
+        if visible is None or visible(r):
+            return score(r)
+    return 0.0
+
+
 def rank_hybrid(
     vec_results: list[dict[str, Any]],
     fts_results: list[dict[str, Any]],
@@ -172,6 +184,7 @@ def rank_hybrid(
     date_before: str | None = None,
     fts_threshold: float | None = None,
     vector_relative_floor: float | None = None,
+    visible: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Fuse and re-rank vector + BM25 candidate slates into the final hit list.
 
@@ -210,7 +223,10 @@ def rank_hybrid(
     :func:`palinode.core.store.bm25_query_scale`). Both arms' floors run BEFORE
     fusion, so a candidate needs only one arm to admit it. Both relative
     floors measure against the best candidate in their own arm, so the top
-    match always survives: they bound a slate, they never empty one. The one exemption:
+    match always survives: they bound a slate, they never empty one. With
+    ``visible`` given, "best" is the best candidate it admits, so a record the
+    caller may not see never sets a floor; such rows still flow through, for
+    the caller's own gate to withhold and count. The one exemption:
     an FTS candidate carrying ``has_vector=False`` (the store's mark for a
     chunk with no ``chunks_vec`` row) is kept regardless of its BM25 score,
     because the keyword arm is its only retrieval path. ``threshold`` is
@@ -252,7 +268,7 @@ def rank_hybrid(
         else vector_relative_floor
     )
     if vec_frac > 0.0 and vec_results:
-        top_vec = max(_cosine(r) for r in vec_results)
+        top_vec = _best_visible_score(vec_results, _cosine, visible)
         if top_vec > 0.0:
             vec_results = [r for r in vec_results if _cosine(r) >= vec_frac * top_vec]
     # The FTS arm has its own floor, relative to its best candidate: normalized
@@ -262,7 +278,7 @@ def rank_hybrid(
     # configured default; ``0.0`` = no FTS floor.
     fts_frac = config.search.fts_threshold if fts_threshold is None else fts_threshold
     if fts_frac > 0.0 and fts_results:
-        top_fts = max(r.get("score", 0.0) for r in fts_results)
+        top_fts = _best_visible_score(fts_results, lambda r: r.get("score", 0.0), visible)
         # A candidate the store marked ``has_vector=False`` (an FTS-only row:
         # per-input embed rejection, deferred embed) is exempt — the vector arm
         # can never vouch for it, so the keyword arm is its only route in.

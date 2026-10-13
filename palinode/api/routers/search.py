@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import re
 import logging
+from functools import partial
 from typing import Any, Callable, Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -10,6 +11,7 @@ from palinode.core.config import config
 from palinode.core.parity import CATEGORIES, MEMORY_TYPES, RESOLVE_MODES, TIERS
 from palinode.core.path_guard import to_rel_path
 from palinode.core.ranker import parse_iso_utc
+from palinode.core.visibility import is_row_visible
 from palinode.api._util import _retrieval_logger, _safe_500, effective_project_scope
 from palinode.api.rate_limit import _RATE_LIMIT_SEARCH, _check_rate_limit
 from palinode.api.search_helpers import (
@@ -565,6 +567,9 @@ def search_api(
             req.threshold if req.threshold is not None else config.search.api_threshold
         )
 
+        # The ranker's floors use the gate's own rule, so a withheld best match cannot set one.
+        visible = partial(is_row_visible, scope_chain, cache={})
+
         if query_emb is None:
             def _run(n: int, record_access: bool = True) -> list[dict[str, Any]]:
                 hits = store.search_hybrid(
@@ -574,6 +579,7 @@ def search_api(
                     context_entities=req.context, include_daily=bool(req.include_daily),
                     kind_exclude_list=kind_exclude_list, mode=recall_mode,
                     session_id=req.session_id, record_access=record_access,
+                    visible=visible,
                 )
                 for h in hits:
                     h["mode"] = active_mode
@@ -595,6 +601,7 @@ def search_api(
                     mode=recall_mode,
                     session_id=req.session_id,
                     record_access=record_access,
+                    visible=visible,
                 )
         else:
             # Vector-only search routes through search_hybrid(use_fts=False):
@@ -619,6 +626,7 @@ def search_api(
                     session_id=req.session_id,
                     record_access=record_access,
                     use_fts=False,
+                    visible=visible,
                 )
 
         # The store fetch records ADR-007 recall metadata itself; when the

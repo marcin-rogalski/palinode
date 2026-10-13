@@ -230,6 +230,28 @@ def is_visible(
     return visible_on_chain(chain, meta, file_path=rel)
 
 
+def _row_fallback_metadata(row: dict[str, Any], metadata_key: str) -> dict[str, Any]:
+    cached = row.get(metadata_key)
+    return cached if isinstance(cached, dict) else {}
+
+
+def is_row_visible(
+    chain: ScopeChain | None,
+    row: dict[str, Any],
+    *,
+    cache: dict[str, dict[str, Any]] | None = None,
+) -> bool:
+    """May a session on ``chain`` see this search-result row?
+
+    The per-row decision :func:`filter_visible` makes, for a caller that needs
+    it one row at a time.
+    """
+    return is_visible(
+        chain, row.get("file_path"),
+        fallback_metadata=_row_fallback_metadata(row, "metadata"), cache=cache,
+    )
+
+
 def filter_visible(
     chain: ScopeChain | None,
     rows: Iterable[dict[str, Any]],
@@ -260,8 +282,7 @@ def filter_visible(
     cache: dict[str, dict[str, Any]] = {}
     out: list[dict[str, Any]] = []
     for row in rows:
-        cached = row.get(metadata_key)
-        fallback = cached if isinstance(cached, dict) else {}
+        fallback = _row_fallback_metadata(row, metadata_key)
         path = row.get(path_key)
         if is_visible(chain, path, fallback_metadata=fallback, cache=cache):
             out.append(row)

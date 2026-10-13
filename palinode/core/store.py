@@ -32,6 +32,7 @@ from palinode.core.lifecycle import (
 )
 from palinode.core.path_guard import to_rel_path
 from palinode.core.quote_verify import QuoteStatus, verify_source_anchors
+from palinode.core.where import matches_where
 # The hybrid-search scoring pipeline + its pure decay/predicate helpers live in
 # ranker.py. Re-exported here so `store.effective_importance`,
 # `store._is_daily_file`, etc. keep resolving for internal callers and tests.
@@ -1079,7 +1080,8 @@ def search(query_embedding: list[float], category: str | None = None,
            date_after: str | None = None, date_before: str | None = None,
            record_access: bool = True,
            kind_exclude_list: Sequence[str] | None = None,
-           mode: str = "explicit", session_id: str | None = None) -> list[dict[str, Any]]:
+           mode: str = "explicit", session_id: str | None = None,
+           chunk_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
     """Search the vector index for semantically similar memory chunks.
 
     Performs cosine similarity search via SQLite-vec, filtering by category
@@ -1102,6 +1104,7 @@ def search(query_embedding: list[float], category: str | None = None,
         kind_exclude_list (Sequence[str] | None): ADR-015 §2.3 recall-exclusion.
             None → exclude DEFAULT_RECALL_EXCLUDED_KINDS (telemetry). Empty
             sequence → exclude nothing (include telemetry).
+        chunk_ids (Sequence[str] | None): When set, only these chunks are ranked.
 
     Returns:
         list[dict]: List of dicts with keys: file_path, section_id, content, category,
@@ -1133,6 +1136,16 @@ def search(query_embedding: list[float], category: str | None = None,
         # `k` past its ceiling — it raises rather than returning fewer rows, and
         # callers stack multipliers on top of this one (see VEC_KNN_MAX_K).
         params = [query_vec_json, min(top_k * 3, VEC_KNN_MAX_K)]
+        if chunk_ids is not None:
+            # sqlite-vec answers no rows at all when one listed id has no vector.
+            embedded_ids = [row[0] for row in cursor.execute(
+                "SELECT id FROM chunks_vec WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(chunk_ids)),),
+            )]
+            # Inside the KNN query, so `k` counts only these chunks; one JSON value
+            # carries any number of ids past SQLite's bound-parameter limit.
+            sql += " AND v.id IN (SELECT value FROM json_each(?))"
+            params.append(json.dumps(embedded_ids))
         if category:
             sql += " AND c.category = ?"
             params.append(category)
@@ -1526,7 +1539,8 @@ def keyword_chance(
 
 
 def search_fts(query: str, category: str | None = None, top_k: int = 10,
-               kind_exclude_list: Sequence[str] | None = None) -> list[dict[str, Any]]:
+               kind_exclude_list: Sequence[str] | None = None,
+               chunk_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
     """Search using BM25 full-text search for exact keyword matching.
 
     Complements vector search by catching exact terms (model names, IDs,
@@ -1536,6 +1550,7 @@ def search_fts(query: str, category: str | None = None, top_k: int = 10,
         query: Natural language search query (FTS5 will tokenize it).
         category: Optional category filter.
         top_k: Maximum number of results.
+        chunk_ids: When set, only these chunks are matched and ranked.
 
     Returns:
         List of dicts with keys: file_path, section_id, content,
@@ -1566,6 +1581,10 @@ def search_fts(query: str, category: str | None = None, top_k: int = 10,
         """
         params: list[Any] = [safe_query]
 
+        if chunk_ids is not None:
+            # On the joined row, not fts.rowid: FTS5 would rerun the MATCH once per id.
+            sql += " AND c.id IN (SELECT value FROM json_each(?))"
+            params.append(json.dumps(list(chunk_ids)))
         if category:
             sql += " AND c.category = ?"
             params.append(category)
@@ -1789,6 +1808,7 @@ def list_recent(
     date_before: str | None = None,
     limit: int = 10,
     kind_exclude_list: Sequence[str] | None = None,
+    chunk_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the most recently created/updated chunks (no semantic ranking).
 
@@ -1807,6 +1827,7 @@ def list_recent(
             honoured, a value without one is UTC, and a bare-date
             ``date_before`` covers that whole day.
         limit: Maximum results to return.
+        chunk_ids: When set, only these chunks are listed.
 
     Returns:
         Result dicts with the same shape as `search()`, except `score` is
@@ -1824,6 +1845,9 @@ def list_recent(
         placeholders = ", ".join("?" for _ in types)
         clauses.append(f"json_extract(metadata, '$.type') IN ({placeholders})")
         params.extend(types)
+    if chunk_ids is not None:
+        clauses.append("id IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(list(chunk_ids)))
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     # Over-fetch lightly so the per-row status/date filter has room. The cap
@@ -1866,6 +1890,22 @@ def list_recent(
 
     db.close()
     return results
+
+
+def list_chunk_ids_matching(conditions: list[tuple[str, str]]) -> list[str]:
+    """Ids of the chunks whose indexed frontmatter satisfies every ``where`` condition.
+
+    Uses :func:`palinode.core.where.matches_where`, the rule list applies to files.
+    """
+    db = get_db()
+    try:
+        rows = db.execute("SELECT id, metadata FROM chunks").fetchall()
+    finally:
+        db.close()
+    return [
+        row["id"] for row in rows
+        if matches_where(json.loads(row["metadata"]) if row["metadata"] else {}, conditions)
+    ]
 
 
 def recent_save_embeddings(
@@ -2305,6 +2345,7 @@ def search_hybrid(
     fts_threshold: float | None = None,
     vector_relative_floor: float | None = None,
     visible: Callable[[dict[str, Any]], bool] | None = None,
+    chunk_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Hybrid search combining semantic vectors and BM25 keyword matching.
 
@@ -2369,6 +2410,8 @@ def search_hybrid(
             ``hybrid_weight`` is forced to 0.0 in this mode so a
             caller-supplied weight of 1.0 ("BM25 only") cannot zero out the
             only arm actually present.
+        chunk_ids: When set, both arms rank only these chunks
+            (:func:`list_chunk_ids_matching`).
 
     Returns:
         Merged and re-ranked list of result dicts, sorted by combined score.
@@ -2379,7 +2422,8 @@ def search_hybrid(
     # the caller's real vector `threshold` itself before fusion (see its
     # docstring).
     vec_results = (search(query_embedding, category=category, top_k=top_k * 2, threshold=0.0,
-                          record_access=False, kind_exclude_list=kind_exclude_list)
+                          record_access=False, kind_exclude_list=kind_exclude_list,
+                          chunk_ids=chunk_ids)
                    if query_embedding is not None else [])
 
     fts_results: list[dict[str, Any]] = []
@@ -2388,7 +2432,7 @@ def search_hybrid(
         # Explicit lexical retrieval has no second arm to hide a broken FTS
         # backend. Let database/programming errors reach the typed API failure.
         fts_results = search_fts(query_text, category=category, top_k=top_k * 2,
-                                 kind_exclude_list=kind_exclude_list)
+                                 kind_exclude_list=kind_exclude_list, chunk_ids=chunk_ids)
         effective_hybrid_weight = 1.0
         # Single-arm slate: its own floor (``search.lexical_fts_threshold``),
         # looser than the two-arm ``fts_threshold`` because nothing else can
@@ -2400,7 +2444,7 @@ def search_hybrid(
     elif use_fts:
         try:
             fts_results = search_fts(query_text, category=category, top_k=top_k * 2,
-                                     kind_exclude_list=kind_exclude_list)
+                                     kind_exclude_list=kind_exclude_list, chunk_ids=chunk_ids)
         except Exception as first_exc:
             # FTS5 corrupted — rebuild and retry once
             import logging
@@ -2409,7 +2453,8 @@ def search_hybrid(
             rebuild_fts()
             try:
                 fts_results = search_fts(query_text, category=category, top_k=top_k * 2,
-                                         kind_exclude_list=kind_exclude_list)
+                                         kind_exclude_list=kind_exclude_list,
+                                         chunk_ids=chunk_ids)
             except Exception as exc:
                 # Give up on BM25 — but never silently: an invisible
                 # degradation to vector-only is how a sanitizer gap went

@@ -71,7 +71,7 @@ def _refuse_store_dir(ctx: click.Context, param: click.Parameter, value: str | N
     callback=_refuse_store_dir,
     expose_value=False,
     is_eager=True,
-    help="Use PATH as the memory directory, in place of PALINODE_DIR. Must come first.",
+    help="Act as PALINODE_DIR=PATH does: read the config, and so the API address, from PATH. Must come first.",
 )
 @click.option(
     "--version",

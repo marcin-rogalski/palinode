@@ -43,7 +43,7 @@ Global options go between `palinode` and the command.
 
 | Option | Description |
 |---|---|
-| `--dir PATH` | Use `PATH` as the memory directory for this one command, in place of `PALINODE_DIR`. `palinode.config.yaml` is read from `PATH`. Must come first: `palinode --dir ~/notes search "q"`, never after the command. A path that is not an existing directory exits 2. `~` is expanded, and a relative path is taken from the current directory, which stays the one the project is resolved from. |
+| `--dir PATH` | Does for this one command what `PALINODE_DIR=PATH` does, and wins over it. `palinode.config.yaml` is read from `PATH`, so an API-backed command talks to the server that config names, while the commands that read the directory themselves (`obsidian-sync`, `import from-vault`, `mcp-smoke`, `mcp-config`) use `PATH`. Must come first: `palinode --dir ~/notes mcp-config`, never after the command. A path that is not an existing directory exits 2. `~` is expanded, and a relative path is taken from the current directory, which stays the one the project is resolved from. |
 | `--version` | Print the banner and version. |
 | `--help` | Print usage; `palinode <command> --help` prints the command's. |
 

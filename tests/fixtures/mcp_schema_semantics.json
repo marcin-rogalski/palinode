@@ -226,7 +226,7 @@
     "required": []
   },
   "palinode_list": {
-    "description": "List memory files, optionally filtered by category or core status. Use to browse what memories exist before reading or searching.",
+    "description": "List memory files, optionally filtered by category, core status or frontmatter. Use to browse what memories exist before reading or searching.",
     "params": {
       "category": {
         "enum": [
@@ -237,7 +237,9 @@
           "research"
         ]
       },
-      "core_only": {}
+      "core_only": {},
+      "include_inbox": {},
+      "where": {}
     },
     "required": []
   },

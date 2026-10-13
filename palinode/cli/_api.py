@@ -291,6 +291,8 @@ class PalinodeAPI:
         category: str | None = None,
         core_only: bool | None = None,
         include_retired_core: bool | None = None,
+        where: list[str] | None = None,
+        include_inbox: bool | None = None,
     ) -> list[dict[str, Any]]:
         """List memory files via the API.  ADR-010.
 
@@ -305,6 +307,10 @@ class PalinodeAPI:
             params["core_only"] = "true"
         if include_retired_core:
             params["include_retired_core"] = "true"
+        if where:
+            params["where"] = list(where)
+        if include_inbox:
+            params["include_inbox"] = "true"
         response = self.client.get("/list", params=params)
         response.raise_for_status()
         return response.json()

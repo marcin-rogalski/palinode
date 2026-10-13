@@ -62,6 +62,7 @@ from palinode.core.explain import (
     MAX_RECORDS_CEILING as _EXPLAIN_LIMIT_MAX,
 )
 from palinode.core.lifecycle_render import render_lifecycle_preview, render_retained_copies
+from palinode.core.where import WhereError, parse_where
 from palinode.core.parity import (
     CATEGORIES,
     CORRECTION_ACTIONS,
@@ -1136,7 +1137,7 @@ def _all_tools() -> list[types.Tool]:
         types.Tool(
             name="palinode_list",
             description=(
-                "List memory files, optionally filtered by category or core status. "
+                "List memory files, optionally filtered by category, core status or frontmatter. "
                 "Use to browse what memories exist before reading or searching."
             ),
             inputSchema={
@@ -1150,6 +1151,16 @@ def _all_tools() -> list[types.Tool]:
                     "core_only": {
                         "type": "boolean",
                         "description": "If true, only return files with core: true in frontmatter",
+                        "default": False,
+                    },
+                    "where": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Frontmatter filters as key=value (e.g. status=open); all must match.",
+                    },
+                    "include_inbox": {
+                        "type": "boolean",
+                        "description": "Also list inbox/, where ActionItems are saved.",
                         "default": False,
                     },
                 },
@@ -2742,9 +2753,25 @@ def _handles(tool_name: str) -> Callable[[_ToolHandler], _ToolHandler]:
     return register
 
 
+def _where_argument(arguments: dict[str, Any]) -> list[str]:
+    """The ``where`` entries to send; raises :class:`WhereError` on a malformed one."""
+    raw = arguments.get("where")
+    where = _coerce_str_array(raw) if raw else []
+    if isinstance(where, str):
+        where = [where]
+    if not isinstance(where, list):
+        raise WhereError("where must be a list of key=value entries")
+    parse_where(where)
+    return where
+
+
 # ── list ──────────────────────────────────────────────────────────
 @_handles("palinode_list")
 async def _tool_list(arguments: dict[str, Any]) -> list[types.TextContent]:
+    try:
+        where = _where_argument(arguments)
+    except WhereError as e:
+        return _text(f"Error: {e}")
     params: dict[str, Any] = {}
     if arguments.get("category"):
         params["category"] = arguments["category"]
@@ -2755,6 +2782,10 @@ async def _tool_list(arguments: dict[str, Any]) -> list[types.TextContent]:
         # The injection consumers of the same endpoint (the SessionStart hook,
         # the plugins) omit the flag and get it withheld.
         params["include_retired_core"] = "true"
+    if where:
+        params["where"] = where
+    if str(arguments.get("include_inbox", False)).lower() in ("true", "1"):
+        params["include_inbox"] = "true"
 
     resp = await _get("/list", params=params)
     if resp.status_code != 200:

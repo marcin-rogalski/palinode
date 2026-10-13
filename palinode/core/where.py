@@ -22,13 +22,8 @@ class WhereError(ValueError):
     """A ``where`` entry that is not ``key=value`` with a well-formed key."""
 
 
-def parse_where(entries: Iterable[Any] | str | None) -> list[tuple[str, str]]:
-    """``(key, value)`` pairs for *entries*; raises :class:`WhereError` on a malformed one.
-
-    A single string is one entry.
-    """
-    if isinstance(entries, str):
-        entries = [entries]
+def parse_where(entries: Iterable[Any] | None) -> list[tuple[str, str]]:
+    """``(key, value)`` pairs for *entries*; raises :class:`WhereError` on a malformed one."""
     conditions: list[tuple[str, str]] = []
     for entry in entries or ():
         key, sep, value = str(entry).partition("=")

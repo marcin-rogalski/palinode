@@ -1,8 +1,19 @@
 import click
 from palinode.cli._api import api_client
-from palinode.cli._options import validate_where
 from palinode.cli._format import console, print_result, get_default_format, OutputFormat
 from palinode.core.parity import CATEGORIES
+from palinode.core.where import WhereError, parse_where
+
+
+def _validate_where(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> tuple[str, ...]:
+    try:
+        parse_where(value)
+    except WhereError as exc:
+        raise click.BadParameter(str(exc), ctx=ctx, param=param) from exc
+    return value
+
 
 @click.command()
 @click.option("--category", type=click.Choice(CATEGORIES))
@@ -10,7 +21,7 @@ from palinode.core.parity import CATEGORIES
 @click.option(
     "--where",
     multiple=True,
-    callback=validate_where,
+    callback=_validate_where,
     help="Only files whose frontmatter has key=value (e.g. status=open). Repeat to require all.",
 )
 @click.option("--include-inbox", is_flag=True, help="Also list inbox/, where ActionItems are saved")

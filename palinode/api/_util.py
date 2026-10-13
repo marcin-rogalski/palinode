@@ -14,15 +14,13 @@ import logging
 import threading
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Any
 
 from fastapi import HTTPException
-from pydantic import AfterValidator
 
 from palinode.core.config import config
 from palinode.core.context_prime import ProjectResolution
 from palinode.core.retrieval_log import RetrievalLogger
-from palinode.core.where import parse_where
 
 logger = logging.getLogger("palinode.api")
 
@@ -114,12 +112,3 @@ _auto_summary_state: dict[str, Any] = {
     "total_runs": 0,
     "total_errors": 0,
 }
-
-
-def _check_where(where: list[str] | None) -> list[str] | None:
-    parse_where(where)
-    return where
-
-
-# ``key=value`` frontmatter filters, refused with a 422 that names the entry.
-WhereEntries = Annotated[list[str] | None, AfterValidator(_check_where)]

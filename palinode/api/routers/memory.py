@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from typing import Annotated, Any, Iterable, Literal
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from palinode.core import store
 from palinode.core.agent_directed import read_notice, withhold_agent_directed
 from palinode.core.config import config
@@ -19,7 +19,7 @@ from palinode.core.lifecycle import eligibility, retired_reason
 from palinode.core.visibility import is_visible
 from palinode.core.where import matches_where, parse_where
 from palinode.api._util import (
-    WhereEntries, _auto_summary_state, _retrieval_logger, _safe_500, _utc_now,
+    _auto_summary_state, _retrieval_logger, _safe_500, _utc_now,
 )
 from palinode.api.path_safety import (
     _memory_base_dir, _open_memory_file_text, _resolve_memory_path,
@@ -486,12 +486,18 @@ def collect_memory_files(
     return results
 
 
+def _check_where(where: list[str] | None) -> list[str] | None:
+    # Raised inside validation, a malformed entry gets FastAPI's 422 naming it.
+    parse_where(where)
+    return where
+
+
 @router.get("/list")
 def list_api(
     category: Literal[*CATEGORIES] | None = None,
     core_only: bool = False,
     include_retired_core: bool = False,
-    where: Annotated[WhereEntries, Query()] = None,
+    where: Annotated[list[str] | None, Query(), AfterValidator(_check_where)] = None,
     include_inbox: bool = False,
 ) -> list[dict[str, Any]]:
     """Browse memories, newest first.

@@ -127,6 +127,9 @@ embeddings:
     # keep_alive 0, so the model does not stay CPU-resident afterwards. Off →
     # the chunk stays keyword-only until re-embedded. Ollama dialect only.
     # nan_cpu_retry: true
+  # For an embedder slower than the save timeout (PALINODE_SAVE_TIMEOUT, 30 s): /save
+  # returns keyword-searchable, the watcher embeds. Env: PALINODE_DEFER_EMBED_ON_SAVE.
+  # defer_embed_on_save: false
 
 # -----------------------------------------------------------------------------
 # Auto-Summary

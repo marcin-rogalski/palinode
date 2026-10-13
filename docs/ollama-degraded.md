@@ -125,6 +125,18 @@ These live in `palinode.core.ollama_client` (retry/circuit) and config:
 - **Description timeout** — `auto_summary.describe_timeout_seconds` (env
   `PALINODE_DESCRIBE_TIMEOUT_SECONDS`, default 5 s) keeps a cold chat model from
   blocking `/save`.
+- **Save timeout and a slow embedder** — `/save` embeds inline, so on a slow
+  (for example CPU-only) embedder a save can outlast the client's request
+  timeout after the write has landed, and a retry then saves twice. Raise the
+  CLI and MCP timeout with `PALINODE_SAVE_TIMEOUT` (seconds, default 30), or set
+  `embeddings.defer_embed_on_save: true` (env `PALINODE_DEFER_EMBED_ON_SAVE`).
+  The save then writes keyword-searchable rows and returns `embedded: false`
+  with an `index_error` naming the deferral, and the watcher's next pass on the
+  file embeds them. Until then, search by meaning does not find the record.
+  The watcher must be running for that pass; `palinode reindex` also heals it.
+  A process that has not yet embedded once first sends a short probe, and if
+  the probe fails, that pass defers too; the rows wait for the next edit or a
+  reindex.
 
 ## Related
 

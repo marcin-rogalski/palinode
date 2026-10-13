@@ -262,7 +262,7 @@ class _CapturingClient:
     def __init__(self) -> None:
         self.captured: dict | None = None
 
-    def post(self, path, json=None, params=None):
+    def post(self, path, json=None, params=None, timeout=None):
         self.captured = json
 
         class _Resp:

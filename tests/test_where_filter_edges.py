@@ -40,6 +40,7 @@ from palinode.api import server
 from palinode.core import embedder, store
 from palinode.core.config import config
 from palinode.indexer import reconcile
+from palinode.core.where import matches_where
 from palinode.indexer.index_file import index_file
 
 _KEYWORD = "harborlight"
@@ -87,11 +88,16 @@ def _save(api, slug: str, **kwargs) -> str:
     return response.json()["rel_path"]
 
 
+def _found_all(api, *entries: str) -> list[str]:
+    """The paths the ``where`` entries select together on ``GET /list``, asserting a 200."""
+    response = api.get("/list", params={"where": list(entries)})
+    assert response.status_code == 200, f"{entries!r}: {response.text}"
+    return [row["file"] for row in response.json()]
+
+
 def _found(api, entry: str) -> list[str]:
     """The paths one ``where`` entry selects on ``GET /list``, asserting a 200."""
-    response = api.get("/list", params={"where": entry})
-    assert response.status_code == 200, f"{entry!r}: {response.text}"
-    return [row["file"] for row in response.json()]
+    return _found_all(api, entry)
 
 
 # ── timestamps ──────────────────────────────────────────────────────────────
@@ -254,6 +260,201 @@ def test_dates_and_timestamps_read_as_the_date_window_reads_them(
     found = _found(api, entry)
 
     assert sorted(found) == sorted(days[name] for name in expected)
+
+
+# ── the edges of the calendar ───────────────────────────────────────────────
+
+# Valid ISO values whose UTC reading falls outside years 1 to 9999. They are not dates
+# to compare, so they are text, like any value that is not a date.
+_EARLY = "0001-01-01T00:00+01:00"
+_LATE = "9999-12-31T23:59-01:00"
+_EXTREMES = {"early": _EARLY, "late": _LATE}
+_ON_THE_DAY = "2026-10-12T05:00:00Z"
+
+
+@pytest.fixture()
+def extremes(api, memory_dir) -> dict[str, str]:
+    """Records with an extreme ``d``, alone and in a list beside a date on 12 October."""
+    records = {
+        "on-the-day": _write(memory_dir, "x-day", f"status: open\nd: {_ON_THE_DAY}\n"),
+        "elsewhere": _write(memory_dir, "x-elsewhere", "status: open\nd: 2026-10-13T05:00:00Z\n"),
+    }
+    for tag, value in _EXTREMES.items():
+        records[tag] = _write(memory_dir, f"x-{tag}", f'status: open\nd: "{value}"\n')
+        records[f"{tag}-then-day"] = _write(
+            memory_dir, f"x-{tag}-then-day", f'status: open\nd:\n- "{value}"\n- {_ON_THE_DAY}\n'
+        )
+        records[f"day-then-{tag}"] = _write(
+            memory_dir, f"x-day-then-{tag}", f'status: open\nd:\n- {_ON_THE_DAY}\n- "{value}"\n'
+        )
+    return records
+
+
+def _the_day_and_its_lists(extremes: dict[str, str]) -> list[str]:
+    names = ["on-the-day"]
+    for tag in _EXTREMES:
+        names += [f"{tag}-then-day", f"day-then-{tag}"]
+    return sorted(extremes[name] for name in names)
+
+
+@pytest.mark.parametrize("extreme", _EXTREMES.values(), ids=_EXTREMES.keys())
+def test_an_extreme_stored_value_is_text_and_never_raises(extreme):
+    """Red: ``parse_iso_utc`` raises ``OverflowError`` moving the value to UTC.
+    Kills the date comparison catching ``ValueError`` only."""
+    assert matches_where({"d": extreme}, [("d", "2026-10-12")]) is False
+    assert matches_where({"d": extreme}, [("d", extreme)]) is True
+    assert matches_where({"d": [extreme, "2026-10-12"]}, [("d", "2026-10-12")]) is True
+
+
+@pytest.mark.parametrize("extreme", _EXTREMES.values(), ids=_EXTREMES.keys())
+def test_an_extreme_entry_is_text_and_never_raises(extreme):
+    """Red: the entry raises in ``parse_iso_utc`` for every record that has the key.
+    Kills the date comparison catching ``ValueError`` only."""
+    assert matches_where({"d": "2026-10-12"}, [("d", extreme)]) is False
+    assert matches_where({"d": [_ON_THE_DAY, extreme]}, [("d", extreme)]) is True
+
+
+@pytest.mark.parametrize(
+    "stored, entry",
+    [
+        ("0001-01-01T00:00:00Z", "0001-01-01"),
+        ("0001-01-01T00:00:00+00:00", "0001-01-01T00:00:00Z"),
+        ("9999-12-31T23:59:59Z", "9999-12-31"),
+        ("9999-12-31T23:59:59.999999+00:00", "9999-12-31"),
+    ],
+)
+def test_the_first_and_last_instants_of_the_calendar_are_still_dates(stored, entry):
+    """Passes on ebb64a9 and must keep passing. Kills the out-of-range fallback
+    reaching every value in years 1 and 9999 instead of those that overflow."""
+    assert matches_where({"d": stored}, [("d", entry)]) is True
+
+
+def test_a_record_with_an_extreme_value_fails_only_a_date_condition(api, extremes):
+    """Passes on ebb64a9 and must keep passing: the extreme record is listed when
+    another condition selects it, and is not a date on 12 October."""
+    assert extremes["early"] in _found(api, "status=open")
+    assert extremes["late"] in _found(api, "status=open")
+    assert extremes["early"] not in _found(api, "d=2026-10-12")
+    assert extremes["late"] not in _found(api, "d=2026-10-12")
+
+
+def test_an_extreme_value_in_a_list_does_not_hide_the_element_that_matches(api, extremes):
+    """Red: the extreme element raises before the next one is read, and the
+    listing drops the record without a word (``GET /list`` swallows it per file).
+    A scalar cannot show it, since a raise reads as a miss; a list can."""
+    expected = _the_day_and_its_lists(extremes)
+
+    assert sorted(_found(api, "d=2026-10-12")) == expected
+    assert sorted(_found_all(api, "status=open", "d=2026-10-12")) == expected
+    assert _found_all(api, "d=2026-10-12", "status=resolved") == []
+
+
+@pytest.mark.parametrize("tag", _EXTREMES)
+def test_an_extreme_entry_lists_the_records_whose_text_equals_it(api, extremes, tag):
+    """Red for the record that holds a date before the equal text: the entry
+    raises on the date and the listing drops the record. The entry is text, so it
+    selects the records that hold exactly it and no date."""
+    found = _found(api, f"d={_EXTREMES[tag]}")
+
+    assert sorted(found) == sorted(
+        extremes[name] for name in (tag, f"{tag}-then-day", f"day-then-{tag}")
+    )
+
+
+@pytest.mark.parametrize("value", ["2026-02-30", "2026-13-45", "2026-00-10"])
+def test_an_invalid_date_matches_only_equal_text(api, memory_dir, value):
+    """Passes on ebb64a9 and must keep passing. Kills an invalid date being rolled
+    over to a real one (30 February to 2 March), or compared by its first ten
+    characters."""
+    same = _write(memory_dir, "bad-same", f'd: "{value}"\n')
+    timed = _write(memory_dir, "bad-timed", f'd: "{value}T10:00:00Z"\n')
+    march = _write(memory_dir, "real-march", 'd: "2026-03-02"\n')
+    ok = _write(memory_dir, "real-ok", 'd: "2026-02-28"\n')
+
+    assert _found(api, f"d={value}") == [same]
+    assert _found(api, f"d={value}T10:00:00Z") == [timed]
+    assert sorted(_found(api, "d=2026-03-02")) == [march]
+    assert _found(api, "d=2026-02-28") == [ok]
+
+
+def test_an_hour_without_minutes_is_text(api, memory_dir):
+    """Passes on ebb64a9 and must keep passing. A time needs hh:mm to be read, so
+    ``2026-10-12T10`` is no date: it selects itself, and the day does not select it."""
+    hour = _write(memory_dir, "hour-only", 'd: "2026-10-12T10"\n')
+    full = _write(memory_dir, "hour-full", "d: 2026-10-12T10:00:00Z\n")
+
+    assert _found(api, "d=2026-10-12T10") == [hour]
+    assert _found(api, "d=2026-10-12") == [full]
+    assert _found(api, "d=2026-10-12T10:00:00Z") == [full]
+
+
+def test_the_last_microsecond_of_the_day_is_in_the_day(api, memory_dir):
+    """Passes on ebb64a9 and must keep passing. Kills the end of the day being
+    cut at the second, or a microsecond early."""
+    last = _write(memory_dir, "last-micro", "d: 2026-10-12T23:59:59.999999Z\n")
+    next_day = _write(memory_dir, "next-micro", "d: 2026-10-13T00:00:00Z\n")
+
+    found = _found(api, "d=2026-10-12")
+
+    assert last in found
+    assert next_day not in found
+
+
+def test_fractions_of_a_second_are_compared_exactly_against_a_timestamp(api, memory_dir):
+    """Passes on ebb64a9 and must keep passing. Kills fractions being dropped or
+    rounded before the comparison."""
+    half = _write(memory_dir, "half", "d: 2026-10-12T10:00:00.500000Z\n")
+    half_offset = _write(memory_dir, "half-offset", 'd: "2026-10-12T12:00:00.5+02:00"\n')
+    whole = _write(memory_dir, "whole", "d: 2026-10-12T10:00:00Z\n")
+    micro = _write(memory_dir, "micro", "d: 2026-10-12T10:00:00.000001Z\n")
+
+    assert sorted(_found(api, "d=2026-10-12T10:00:00.5Z")) == sorted([half, half_offset])
+    assert _found(api, "d=2026-10-12T10:00:00Z") == [whole]
+    assert _found(api, "d=2026-10-12T10:00:00.000001Z") == [micro]
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset")
+@pytest.mark.parametrize(
+    "zone", ["UTC", "Europe/Warsaw", "America/New_York", "Asia/Kolkata", "Pacific/Auckland"]
+)
+def test_a_day_is_the_utc_day_and_not_the_local_one(api, memory_dir, zone):
+    """Passes on ebb64a9 and must keep passing. ``00:30+02:00`` on the 12th is the
+    11th in UTC; ``23:30-02:00`` on the 11th is the 12th. Kills the day being cut
+    in the machine's zone or in the stored offset."""
+    early = _write(memory_dir, "tz-early", 'd: "2026-10-12T00:30+02:00"\n')
+    late = _write(memory_dir, "tz-late", 'd: "2026-10-11T23:30-02:00"\n')
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = zone
+    time.tzset()
+    try:
+        on_the_12th = _found(api, "d=2026-10-12")
+        on_the_11th = _found(api, "d=2026-10-11")
+    finally:
+        if before is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+
+    assert on_the_12th == [late]
+    assert on_the_11th == [early]
+
+
+def test_a_day_selects_a_list_when_one_element_is_on_it(api, memory_dir):
+    """Passes on ebb64a9 and must keep passing. Kills a list needing every element
+    on the day, or only its first or last."""
+    middle = _write(
+        memory_dir, "list-middle",
+        "d:\n- 2026-10-11T23:59:59Z\n- 2026-10-12T08:00:00Z\n- 2026-10-13T00:00:00Z\n",
+    )
+    by_offset = _write(
+        memory_dir, "list-offset",
+        'd:\n- "2026-10-12T00:30+02:00"\n- "2026-10-13T01:00+02:00"\n',
+    )
+    _write(memory_dir, "list-none", "d:\n- 2026-10-11T23:59:59Z\n- 2026-10-13T00:00:00Z\n")
+    _write(memory_dir, "list-offset-none", 'd:\n- "2026-10-12T00:30+02:00"\n- "2026-10-13T02:00+02:00"\n')
+
+    assert sorted(_found(api, "d=2026-10-12")) == sorted([middle, by_offset])
 
 
 # ── non-scalar values ───────────────────────────────────────────────────────

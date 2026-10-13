@@ -16,8 +16,7 @@ than one way to go wrong:
 * a key holding null, a mapping, or a list of mappings never matches and never
   fails the request.
 
-Each docstring names the mutant it kills. A test that is red on the head it was
-written against says why.
+Each docstring names the mutant it kills.
 
 Real SQLite + tmp_path through ``TestClient`` in lexical retrieval mode, so no
 embedder is involved; a prior record that only a YAML parser could have written
@@ -154,9 +153,9 @@ def _the_instant(stamped: dict[str, str]) -> list[str]:
 def test_every_spelling_of_an_instant_selects_every_way_it_is_stored(
     api, stamped, spelling
 ):
-    """Red: a stored value with no offset never equals an entry with one, and the
-    other way round. Kills any change that compares a timestamp by its text, or by
-    one spelling: the instant dropped, the ``[T ]`` pattern narrowed, ``Z``
+    """A stored value with no offset equals an entry with one, and the other way
+    round. Kills any change that compares a timestamp by its text, or by one
+    spelling: the instant dropped, the ``[T ]`` pattern narrowed, ``Z``
     unsupported, a missing offset left unread."""
     found = _found(api, f"due={spelling}")
 
@@ -299,8 +298,8 @@ def _the_day_and_its_lists(extremes: dict[str, str]) -> list[str]:
 
 @pytest.mark.parametrize("extreme", _EXTREMES.values(), ids=_EXTREMES.keys())
 def test_an_extreme_stored_value_is_text_and_never_raises(extreme):
-    """Red: ``parse_iso_utc`` raises ``OverflowError`` moving the value to UTC.
-    Kills the date comparison catching ``ValueError`` only."""
+    """Moving the value to UTC overflows, so it is text and the matcher does not
+    raise. Kills the date comparison catching ``ValueError`` only."""
     assert matches_where({"d": extreme}, [("d", "2026-10-12")]) is False
     assert matches_where({"d": extreme}, [("d", extreme)]) is True
     assert matches_where({"d": [extreme, "2026-10-12"]}, [("d", "2026-10-12")]) is True
@@ -308,8 +307,9 @@ def test_an_extreme_stored_value_is_text_and_never_raises(extreme):
 
 @pytest.mark.parametrize("extreme", _EXTREMES.values(), ids=_EXTREMES.keys())
 def test_an_extreme_entry_is_text_and_never_raises(extreme):
-    """Red: the entry raises in ``parse_iso_utc`` for every record that has the key.
-    Kills the date comparison catching ``ValueError`` only."""
+    """Moving the entry to UTC overflows, so it is text and the matcher does not
+    raise for any record that has the key. Kills the date comparison catching
+    ``ValueError`` only."""
     assert matches_where({"d": "2026-10-12"}, [("d", extreme)]) is False
     assert matches_where({"d": [_ON_THE_DAY, extreme]}, [("d", extreme)]) is True
 
@@ -324,14 +324,14 @@ def test_an_extreme_entry_is_text_and_never_raises(extreme):
     ],
 )
 def test_the_first_and_last_instants_of_the_calendar_are_still_dates(stored, entry):
-    """Passes on ebb64a9 and must keep passing. Kills the out-of-range fallback
+    """A guard that must keep passing. Kills the out-of-range fallback
     reaching every value in years 1 and 9999 instead of those that overflow."""
     assert matches_where({"d": stored}, [("d", entry)]) is True
 
 
 def test_a_record_with_an_extreme_value_fails_only_a_date_condition(api, extremes):
-    """Passes on ebb64a9 and must keep passing: the extreme record is listed when
-    another condition selects it, and is not a date on 12 October."""
+    """A guard that must keep passing: the extreme record is listed when another
+    condition selects it, and is not a date on 12 October."""
     assert extremes["early"] in _found(api, "status=open")
     assert extremes["late"] in _found(api, "status=open")
     assert extremes["early"] not in _found(api, "d=2026-10-12")
@@ -339,8 +339,8 @@ def test_a_record_with_an_extreme_value_fails_only_a_date_condition(api, extreme
 
 
 def test_an_extreme_value_in_a_list_does_not_hide_the_element_that_matches(api, extremes):
-    """Red: the extreme element raises before the next one is read, and the
-    listing drops the record without a word (``GET /list`` swallows it per file).
+    """An extreme element must not stop the next one being read: ``GET /list``
+    swallows an error per file, so a raise would drop the record without a word.
     A scalar cannot show it, since a raise reads as a miss; a list can."""
     expected = _the_day_and_its_lists(extremes)
 
@@ -351,9 +351,9 @@ def test_an_extreme_value_in_a_list_does_not_hide_the_element_that_matches(api, 
 
 @pytest.mark.parametrize("tag", _EXTREMES)
 def test_an_extreme_entry_lists_the_records_whose_text_equals_it(api, extremes, tag):
-    """Red for the record that holds a date before the equal text: the entry
-    raises on the date and the listing drops the record. The entry is text, so it
-    selects the records that hold exactly it and no date."""
+    """The entry is text, so it selects the records that hold exactly it and no
+    date, including a record that holds a date before the equal text: comparing
+    the entry with that date must not raise."""
     found = _found(api, f"d={_EXTREMES[tag]}")
 
     assert sorted(found) == sorted(
@@ -363,7 +363,7 @@ def test_an_extreme_entry_lists_the_records_whose_text_equals_it(api, extremes, 
 
 @pytest.mark.parametrize("value", ["2026-02-30", "2026-13-45", "2026-00-10"])
 def test_an_invalid_date_matches_only_equal_text(api, memory_dir, value):
-    """Passes on ebb64a9 and must keep passing. Kills an invalid date being rolled
+    """A guard that must keep passing. Kills an invalid date being rolled
     over to a real one (30 February to 2 March), or compared by its first ten
     characters."""
     same = _write(memory_dir, "bad-same", f'd: "{value}"\n')
@@ -378,7 +378,7 @@ def test_an_invalid_date_matches_only_equal_text(api, memory_dir, value):
 
 
 def test_an_hour_without_minutes_is_text(api, memory_dir):
-    """Passes on ebb64a9 and must keep passing. A time needs hh:mm to be read, so
+    """A guard that must keep passing. A time needs hh:mm to be read, so
     ``2026-10-12T10`` is no date: it selects itself, and the day does not select it."""
     hour = _write(memory_dir, "hour-only", 'd: "2026-10-12T10"\n')
     full = _write(memory_dir, "hour-full", "d: 2026-10-12T10:00:00Z\n")
@@ -389,7 +389,7 @@ def test_an_hour_without_minutes_is_text(api, memory_dir):
 
 
 def test_the_last_microsecond_of_the_day_is_in_the_day(api, memory_dir):
-    """Passes on ebb64a9 and must keep passing. Kills the end of the day being
+    """A guard that must keep passing. Kills the end of the day being
     cut at the second, or a microsecond early."""
     last = _write(memory_dir, "last-micro", "d: 2026-10-12T23:59:59.999999Z\n")
     next_day = _write(memory_dir, "next-micro", "d: 2026-10-13T00:00:00Z\n")
@@ -401,7 +401,7 @@ def test_the_last_microsecond_of_the_day_is_in_the_day(api, memory_dir):
 
 
 def test_fractions_of_a_second_are_compared_exactly_against_a_timestamp(api, memory_dir):
-    """Passes on ebb64a9 and must keep passing. Kills fractions being dropped or
+    """A guard that must keep passing. Kills fractions being dropped or
     rounded before the comparison."""
     half = _write(memory_dir, "half", "d: 2026-10-12T10:00:00.500000Z\n")
     half_offset = _write(memory_dir, "half-offset", 'd: "2026-10-12T12:00:00.5+02:00"\n')
@@ -418,7 +418,7 @@ def test_fractions_of_a_second_are_compared_exactly_against_a_timestamp(api, mem
     "zone", ["UTC", "Europe/Warsaw", "America/New_York", "Asia/Kolkata", "Pacific/Auckland"]
 )
 def test_a_day_is_the_utc_day_and_not_the_local_one(api, memory_dir, zone):
-    """Passes on ebb64a9 and must keep passing. ``00:30+02:00`` on the 12th is the
+    """A guard that must keep passing. ``00:30+02:00`` on the 12th is the
     11th in UTC; ``23:30-02:00`` on the 11th is the 12th. Kills the day being cut
     in the machine's zone or in the stored offset."""
     early = _write(memory_dir, "tz-early", 'd: "2026-10-12T00:30+02:00"\n')
@@ -441,7 +441,7 @@ def test_a_day_is_the_utc_day_and_not_the_local_one(api, memory_dir, zone):
 
 
 def test_a_day_selects_a_list_when_one_element_is_on_it(api, memory_dir):
-    """Passes on ebb64a9 and must keep passing. Kills a list needing every element
+    """A guard that must keep passing. Kills a list needing every element
     on the day, or only its first or last."""
     middle = _write(
         memory_dir, "list-middle",

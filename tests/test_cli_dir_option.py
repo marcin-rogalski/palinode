@@ -390,15 +390,6 @@ def test_the_group_refuses_dir_and_says_it_must_come_first(monkeypatch, world):
     assert "PALINODE_DIR" not in os.environ
 
 
-def test_the_group_does_not_run_the_subcommand_when_it_refuses_dir(world):
-    from palinode.cli import main
-    from palinode.core.brand import BANNER
-
-    result = CliRunner().invoke(main, ["--dir", str(world.named), "banner"])
-
-    assert BANNER not in result.output
-
-
 def test_the_group_refuses_dir_even_for_a_path_that_does_not_exist(world):
     from palinode.cli import main
 

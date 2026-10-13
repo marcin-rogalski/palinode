@@ -40,7 +40,7 @@ def _resolve_store_dir(value: str) -> str:
 
 
 def main() -> None:
-    """Run the ``palinode`` CLI, with ``--dir PATH`` before the subcommand naming the store."""
+    """Run the ``palinode`` CLI, with ``--dir PATH`` before the subcommand naming the palinode directory."""
     try:
         store_dir, args = _split_store_dir(sys.argv[1:])
         if store_dir is not None:
@@ -51,7 +51,9 @@ def main() -> None:
 
     from palinode.cli import main as cli_main
 
-    cli_main(args=args, prog_name="palinode")
+    # click expands wildcards on Windows only in the arguments it reads from sys.argv itself.
+    sys.argv[1:] = args
+    cli_main(prog_name="palinode")
 
 
 if __name__ == "__main__":

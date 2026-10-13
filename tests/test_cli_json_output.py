@@ -20,8 +20,11 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+from importlib import import_module
+from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
 from palinode.cli._format import OutputFormat, emit_json, print_result
 
@@ -113,6 +116,59 @@ def test_print_result_defaults_to_json_when_not_a_tty(capsys, monkeypatch):
     print_result(ADVERSARIAL)
 
     assert json.loads(_captured(capsys)) == ADVERSARIAL
+
+
+# ---------------------------------------------------------------------------
+# git commands — custom TTY display, shared piped output
+# ---------------------------------------------------------------------------
+
+git_mod = import_module("palinode.cli.git")
+
+
+@pytest.mark.parametrize(
+    ("command", "arguments", "client_method", "payload"),
+    [
+        ("blame", ["notes/example.md"], "blame", {"blame": "line [source]"}),
+        (
+            "blame",
+            ["notes/example.md", "--claims"],
+            "blame",
+            {"blame": "line [source]", "claims": [{"status": "verified"}]},
+        ),
+        ("rollback", ["notes/example.md"], "rollback", {"status": "preview", "path": "[record]"}),
+        ("push", [], "push", {"status": "pushed", "remote": "[origin]"}),
+    ],
+)
+def test_git_commands_default_to_json_when_stdout_is_not_a_tty(
+    command, arguments, client_method, payload
+):
+    """All git commands keep their complete API response machine-readable."""
+    with patch.object(git_mod.api_client, client_method, return_value=payload):
+        result = CliRunner().invoke(getattr(git_mod, command), arguments)
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == payload
+    assert "[" in result.output
+
+
+def test_blame_claims_keeps_human_rendering_when_output_is_a_tty():
+    """The claims view remains prose in the interactive path."""
+    payload = {"blame": "line [source]", "claims": [{"status": "verified"}]}
+    with (
+        patch.object(git_mod.api_client, "blame", return_value=payload),
+        patch.object(git_mod, "get_default_format", return_value=OutputFormat.TEXT),
+        patch(
+            "palinode.core.claims.format_claims_resolution",
+            return_value="Claim resolution [verified]",
+        ),
+    ):
+        result = CliRunner().invoke(git_mod.blame, ["notes/example.md", "--claims"])
+
+    assert result.exit_code == 0, result.output
+    assert "line [source]" in result.output
+    assert "Claim resolution [verified]" in result.output
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(result.output)
 
 
 # ---------------------------------------------------------------------------

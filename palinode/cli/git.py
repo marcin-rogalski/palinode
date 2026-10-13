@@ -1,6 +1,6 @@
 import click
 from palinode.cli._api import api_client
-from palinode.cli._format import console, print_result, get_default_format
+from palinode.cli._format import OutputFormat, console, get_default_format, print_result
 
 @click.command()
 @click.argument("file_path")
@@ -18,7 +18,10 @@ def blame(file_path, search, claims):
     """Show when lines were changed."""
     try:
         data = api_client.blame(file_path, search, claims=claims)
-        if claims:
+        output_format = get_default_format()
+        if output_format == OutputFormat.JSON:
+            print_result(data, fmt=output_format)
+        elif claims:
             from palinode.core.claims import format_claims_resolution
 
             # markup=False: blame/claims lines carry [status] and [git: …]
@@ -93,7 +96,7 @@ def rollback(file_path, commit, dry_run, undo_retirements):
     except Exception as e:
         console.print(f"[red]Error rolling back: {str(e)}[/red]")
         raise SystemExit(1)
-    console.print(data)
+    print_result(data, fmt=get_default_format())
     if isinstance(data, dict) and data.get("status") == "refused":
         raise SystemExit(1)
 
@@ -102,7 +105,7 @@ def push():
     """Sync to GitHub."""
     try:
         data = api_client.push()
-        console.print(data)
+        print_result(data, fmt=get_default_format())
     except Exception as e:
         console.print(f"[red]Error pushing: {str(e)}[/red]")
         raise SystemExit(1)

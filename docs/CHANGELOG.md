@@ -6,6 +6,8 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Search filters on frontmatter with `where`, before it ranks.** It takes the same entries as list and matches them the same way. The matching chunks are found before anything ranks, and both the vector and the keyword arm rank only those, so a `where` match is never lost for ranking below records that do not match. An empty-query search lists the newest matching records, and when nothing matches, search answers with no results without embedding the query. On `POST /search` it is a JSON list, on the CLI a repeatable `palinode search --where`, and on the MCP `palinode_search` tool an array; the OpenClaw plugin's `palinode_search` passes it through. A malformed entry is refused as it is on list.
+
 ### Changed
 
 ### Fixed

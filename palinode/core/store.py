@@ -2192,6 +2192,7 @@ def search_hybrid(
     use_fts: bool = True,
     fts_threshold: float | None = None,
     vector_relative_floor: float | None = None,
+    visible: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Hybrid search combining semantic vectors and BM25 keyword matching.
 
@@ -2216,6 +2217,11 @@ def search_hybrid(
             neighbours filling the slate. Measured against the best candidate,
             so the top match always survives — it bounds a slate and never
             empties one.
+        visible: The caller's visibility check for one candidate row. When
+            given, both arms' relative floors are measured against the best
+            candidate it admits, so a record the caller may not see cannot
+            push out one it may. Rows it refuses are still returned, for the
+            caller's own gate to withhold and count.
         fts_threshold: The FTS arm's own floor, as a fraction of the best
             keyword match in this result set (``config.search.fts_threshold``
             when ``None``; measured default 0.4; ``0.0`` = no FTS floor —
@@ -2326,6 +2332,7 @@ def search_hybrid(
         threshold=threshold,
         fts_threshold=fts_threshold,
         vector_relative_floor=vector_relative_floor,
+        visible=visible,
         hybrid_weight=effective_hybrid_weight,
         priority_weight=_PRIORITY_RANK_WEIGHT,
         context_files=context_files,

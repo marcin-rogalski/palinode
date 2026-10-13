@@ -1080,17 +1080,17 @@ palinode list --core --format json
 palinode list --include-inbox --where type=ActionItem --where status=open
 ```
 
-A `--where` value matches a scalar by its text and a boolean as `true` or `false`
-(`core=true`, not `core=True`). A dashed ISO date, optionally with a time of at
-least hours and minutes, is read as `palinode search --date-after`/`--date-before`
-read it: a timestamp matches the same instant
-whether written with `T` or a space, with `Z`, an offset or none; a value without an
-offset is UTC; a stored bare date is midnight UTC; and `--where due=2026-10-12`
-matches any time on that UTC day. `20261012`, `2026-W42` and `2026-10-12T10` are compared as text.
-A list matches when any element does. A file without the key, or with a null or a
-mapping there, never matches. An entry without `=`, with an empty value, or with a
-key not matching `[A-Za-z_][A-Za-z0-9_-]*` exits with status 2 before any request
-is made.
+A `--where` value matches a scalar by its text and a boolean as `true` or
+`false` (`core=true`, not `core=True`). A dashed ISO date, optionally with a
+time of at least hours and minutes, is read as
+`palinode search --date-after`/`--date-before` read it: a timestamp matches
+the same instant whether written with `T` or a space, with `Z`, an offset or
+none; a value without an offset is UTC; a stored bare date is midnight UTC; and
+`--where due=2026-10-12` matches any time on that UTC day. `20261012`,
+`2026-W42` and `2026-10-12T10` are compared as text. A list matches when any
+element does. A file without the key, or with a null or a mapping there, never
+matches. An entry without `=`, with an empty value, or with a key not matching
+`[A-Za-z_][A-Za-z0-9_-]*` exits with status 2 before any request is made.
 
 Output: **auto**.
 

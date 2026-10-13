@@ -9,7 +9,8 @@ than one way to go wrong:
   and for one stored as a YAML timestamp, and a value with no offset is UTC. A bare
   date is a day: it matches any time on it, and as a stored value it is midnight.
   Only dates written with dashes are read so: ``20261012`` and ``2026-W42`` are
-  compared as text;
+  compared as text. Whitespace around a date or timestamp is ignored, as the window
+  ignores it; any other text is compared exactly;
 * the ``palinode_list`` ``where`` argument is a list, a bare string or a
   JSON-string array; an object or an item that is not a string is refused naming
   the problem, with no request made;
@@ -455,6 +456,162 @@ def test_a_day_selects_a_list_when_one_element_is_on_it(api, memory_dir):
     _write(memory_dir, "list-offset-none", 'd:\n- "2026-10-12T00:30+02:00"\n- "2026-10-13T02:00+02:00"\n')
 
     assert sorted(_found(api, "d=2026-10-12")) == sorted([middle, by_offset])
+
+
+# ── whitespace around a date ────────────────────────────────────────────────
+
+_PADDINGS = [" ", "\t"]
+_PADDING_IDS = ["space", "tab"]
+
+
+@pytest.mark.parametrize("padding", _PADDINGS, ids=_PADDING_IDS)
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_whitespace_around_a_bare_date_entry_is_ignored(padding, side):
+    """The date window strips its bounds, so ``where`` does too: a padded bare date
+    still selects any time on its UTC day. Kills the date test reading the entry
+    unstripped."""
+    entry = padding + "2026-10-12" if side == "before" else "2026-10-12" + padding
+
+    assert matches_where({"d": "2026-10-12T15:00:00Z"}, [("d", entry)]) is True
+    assert matches_where({"d": "2026-10-12T00:00:00Z"}, [("d", entry)]) is True
+    assert matches_where({"d": "2026-10-13T00:00:00Z"}, [("d", entry)]) is False
+    assert matches_where({"d": "2026-10-11T23:59:59Z"}, [("d", entry)]) is False
+
+
+@pytest.mark.parametrize("padding", _PADDINGS, ids=_PADDING_IDS)
+@pytest.mark.parametrize("side", ["before", "after"])
+def test_whitespace_around_a_stored_bare_date_is_ignored_and_it_is_midnight(padding, side):
+    """A stored bare date with padding is still midnight UTC, as the window reads
+    it. Kills the date test reading the stored value unstripped, and a padded date
+    being read as a whole day."""
+    stored = padding + "2026-10-12" if side == "before" else "2026-10-12" + padding
+
+    assert matches_where({"d": stored}, [("d", "2026-10-12")]) is True
+    assert matches_where({"d": stored}, [("d", "2026-10-12T00:00:00Z")]) is True
+    assert matches_where({"d": stored}, [("d", "2026-10-12T10:00:00Z")]) is False
+    assert matches_where({"d": stored}, [("d", "2026-10-13")]) is False
+    assert matches_where({"d": [stored, "2026-10-20"]}, [("d", "2026-10-12")]) is True
+
+
+@pytest.mark.parametrize("padding", _PADDINGS, ids=_PADDING_IDS)
+def test_a_leading_whitespace_on_a_timestamp_is_ignored_on_either_side(padding):
+    """Kills the date test reading a timestamp unstripped at its start."""
+    spelled = padding + "2026-10-12T10:00:00Z"
+
+    assert matches_where({"d": "2026-10-12T10:00:00Z"}, [("d", spelled)]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12T10:00:00Z")]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12")]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12T10:00:01Z")]) is False
+    assert matches_where({"d": "2026-10-12T10:00:01Z"}, [("d", spelled)]) is False
+
+
+@pytest.mark.parametrize("padding", [" ", "\n", "\t"], ids=["space", "newline", "tab"])
+def test_a_trailing_whitespace_on_a_timestamp_is_ignored_on_either_side(padding):
+    """Kills the date test reading a timestamp unstripped at its end, including the
+    newline that ``.`` in the date pattern does not match."""
+    spelled = "2026-10-12T10:00" + padding
+
+    assert matches_where({"d": "2026-10-12T10:00:00Z"}, [("d", spelled)]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12T10:00:00Z")]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12")]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12T10:01:00Z")]) is False
+
+
+def test_a_space_before_an_offset_is_still_a_timestamp():
+    """A guard that must keep passing: the YAML timestamp form, read as 08:00Z.
+    Kills a date pattern that refuses any inner space."""
+    spelled = "2026-10-12T10:00:00 +02:00"
+
+    assert matches_where({"d": spelled}, [("d", "2026-10-12T08:00:00Z")]) is True
+    assert matches_where({"d": "2026-10-12T08:00:00Z"}, [("d", spelled)]) is True
+    assert matches_where({"d": spelled}, [("d", "2026-10-12T10:00:00Z")]) is False
+
+
+def test_trailing_junk_after_a_timestamp_keeps_it_text():
+    """A guard that must keep passing. Kills a date test that stops reading at the
+    first character it cannot parse."""
+    junk = "2026-10-12T10:00x"
+
+    assert matches_where({"d": junk}, [("d", "2026-10-12T10:00:00Z")]) is False
+    assert matches_where({"d": junk}, [("d", "2026-10-12")]) is False
+    assert matches_where({"d": "2026-10-12T10:00:00Z"}, [("d", junk)]) is False
+    assert matches_where({"d": junk}, [("d", junk)]) is True
+
+
+@pytest.mark.parametrize("blank", ["   ", "\t", " \n "], ids=["spaces", "tab", "mixed"])
+def test_a_value_of_only_whitespace_never_matches_a_date(blank):
+    """A guard that must keep passing. Kills a stripped empty string being read as
+    a date, or as the start or end of a day."""
+    assert matches_where({"d": blank}, [("d", "2026-10-12")]) is False
+    assert matches_where({"d": "2026-10-12"}, [("d", blank)]) is False
+    assert matches_where({"d": blank}, [("d", "2026-10-12T00:00:00Z")]) is False
+
+
+@pytest.mark.parametrize(
+    "stored, entry, expected",
+    [
+        ("ready ", "ready", False),
+        (" ready", "ready", False),
+        ("ready", "ready ", False),
+        ("ready ", "ready ", True),
+        ("2026-10-12 ", "2026-10-12 ", True),
+        ("20261012 ", "20261012", False),
+    ],
+)
+def test_text_that_is_not_a_date_is_compared_exactly(stored, entry, expected):
+    """A guard that must keep passing: only the date test ignores whitespace. Kills
+    the strip being applied to the equality comparison."""
+    assert matches_where({"k": stored}, [("k", entry)]) is expected
+
+
+@pytest.fixture()
+def padded(api, memory_dir) -> dict[str, str]:
+    """``day`` stored with whitespace around a date, a timestamp, and junk."""
+    return {
+        "trail-date": _write(memory_dir, "pad-trail-date", 'day: "2026-10-12 "\n'),
+        "lead-date": _write(memory_dir, "pad-lead-date", 'day: " 2026-10-12"\n'),
+        "tab-date": _write(memory_dir, "pad-tab-date", 'day: "2026-10-12\\t"\n'),
+        "lead-timed": _write(memory_dir, "pad-lead-timed", 'day: " 2026-10-12T10:00:00Z"\n'),
+        "trail-timed": _write(memory_dir, "pad-trail-timed", 'day: "2026-10-12T10:00:00Z "\n'),
+        "newline-timed": _write(memory_dir, "pad-newline-timed", 'day: "2026-10-12T10:00\\n"\n'),
+        "offset": _write(memory_dir, "pad-offset", 'day: "2026-10-12T10:00:00 +02:00"\n'),
+        "junk": _write(memory_dir, "pad-junk", 'day: "2026-10-12T10:00x"\n'),
+        "blank": _write(memory_dir, "pad-blank", 'day: "   "\n'),
+        "date": _write(memory_dir, "pad-date", "day: 2026-10-12\n"),
+        "ten": _write(memory_dir, "pad-ten", "day: 2026-10-12T10:00:00Z\n"),
+    }
+
+
+_PADDED_DATES = ["trail-date", "lead-date", "tab-date", "date"]
+_PADDED_TEN = ["lead-timed", "trail-timed", "newline-timed", "ten"]
+_PADDED_THE_DAY = _PADDED_DATES + _PADDED_TEN + ["offset"]
+
+
+@pytest.mark.parametrize(
+    "entry, expected",
+    [
+        ("day=2026-10-12", _PADDED_THE_DAY),
+        ("day=2026-10-12 ", _PADDED_THE_DAY),
+        ("day= 2026-10-12", _PADDED_THE_DAY),
+        ("day=2026-10-12\t", _PADDED_THE_DAY),
+        ("day=2026-10-12T00:00:00Z", _PADDED_DATES),
+        ("day= 2026-10-12T00:00:00Z", _PADDED_DATES),
+        ("day=2026-10-12T10:00:00Z", _PADDED_TEN),
+        ("day= 2026-10-12T10:00:00Z", _PADDED_TEN),
+        ("day=2026-10-12T10:00 ", _PADDED_TEN),
+        ("day=2026-10-12T08:00:00Z", ["offset"]),
+        ("day=2026-10-12T10:00x", ["junk"]),
+        ("day=   ", ["blank"]),
+        ("day=2026-10-13", []),
+    ],
+)
+def test_whitespace_around_a_date_does_not_change_what_list_selects(api, padded, entry, expected):
+    """On ``GET /list``, padded dates and timestamps are read as the window reads
+    them, on the stored side and the entry side alike; junk and blanks stay text.
+    Kills the date test reading either side unstripped."""
+    found = _found(api, entry)
+
+    assert sorted(found) == sorted(padded[name] for name in expected)
 
 
 # ── non-scalar values ───────────────────────────────────────────────────────

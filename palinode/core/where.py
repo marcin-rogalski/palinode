@@ -55,9 +55,13 @@ def _is_in_date_span(text: str, expected: str) -> bool:
     if not (_DATE_RE.fullmatch(text) and _DATE_RE.fullmatch(expected)):
         return False
     # As in_date_window(text, expected, expected): a bare date spans its whole UTC day.
-    stamp = parse_iso_utc(text)
-    start = parse_iso_utc(expected)
-    end = parse_iso_utc(expected, end_of_day=True)
+    try:
+        stamp = parse_iso_utc(text)
+        start = parse_iso_utc(expected)
+        end = parse_iso_utc(expected, end_of_day=True)
+    except OverflowError:
+        # A valid ISO value at the calendar's edge can fall outside it once converted to UTC.
+        return False
     if stamp is None or start is None or end is None:
         return False
     return start <= stamp <= end

@@ -190,10 +190,11 @@ class ProjectResolution:
     def to_applied(self, delivery: dict[str, Any]) -> ProjectResolution:
         """The scope a search delivery says the server applied.
 
-        This resolution stands when the server applied the same project or reports none.
+        This resolution stands when the server reports no reason, or applied the
+        project this one names; with no project on either side, the server's reason wins.
         """
         basis = delivery.get("project_resolved_by")
-        if not basis or delivery.get("project") == self.project:
+        if not basis or (self.project is not None and delivery.get("project") == self.project):
             return self
         return ProjectResolution(delivery.get("project"), str(basis))
 

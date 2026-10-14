@@ -111,11 +111,13 @@ def _has_visible_match(chain, matches: list[dict[str, Any]], other_projects: set
     Answers by the live visibility rule search applies to every row. When none is,
     ``other_projects`` collects the matches project isolation withheld.
     """
-    from palinode.core.visibility import filter_visible
+    from palinode.core.visibility import filter_visible, is_row_visible
 
-    one_row_per_file = {row["file_path"]: row for row in matches}.values()
-    return any(filter_visible(chain, [row], other_projects=other_projects)
-               for row in one_row_per_file)
+    cache: dict[str, dict[str, Any]] = {}
+    if any(is_row_visible(chain, row, cache=cache) for row in matches):
+        return True
+    filter_visible(chain, matches, other_projects=other_projects)
+    return False
 
 
 def _fetch_visible(
@@ -540,7 +542,7 @@ def search_api(
         # directly ordered by created_at desc, apply types/date_after filter.
         if not req.query.strip():
             recent_limit = limit * 5 if req.min_priority else limit
-            recent_other: set[str] = set(where_withheld)
+            recent_other: set[str] = set()
             recent = [] if where_matches_nothing else _fetch_visible(
                 scope_chain,
                 lambda n: store.list_recent(
@@ -569,7 +571,7 @@ def search_api(
             _attach_evidence(recent, req, scope_chain)
             return _delivery(recent, req, _build_receipt(recent, req, scope_chain),
                              chain=scope_chain, scope=scope,
-                             other_projects_withheld=len(recent_other))
+                             other_projects_withheld=len(where_withheld if where_matches_nothing else recent_other))
 
         # ADR-008: Augment query with project context before embedding
         embed_query = req.query
@@ -687,7 +689,7 @@ def search_api(
         # The store fetch records ADR-007 recall metadata itself; when the
         # visibility gate widens the window it re-fetches, so recall write-back
         # is deferred to _fetch_visible to keep it counted once per retrieval.
-        other_withheld: set[str] = set(where_withheld)
+        other_withheld: set[str] = set()
         results = [] if where_matches_nothing else _fetch_visible(
             scope_chain,
             _run,
@@ -752,7 +754,7 @@ def search_api(
         )
         return _delivery(final, req, receipt, active_mode=active_mode,
                          chain=scope_chain, scope=scope, confidence=confidence,
-                         other_projects_withheld=len(other_withheld))
+                         other_projects_withheld=len(where_withheld if where_matches_nothing else other_withheld))
     except embedder.EmbeddingInputError:
         raise  # typed 422 via the app-level handler in server.py
     except embedder.EmbeddingUnavailable:

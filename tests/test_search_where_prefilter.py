@@ -419,7 +419,8 @@ def test_a_where_that_matches_something_still_reads_what_it_needs(engine, retrie
 @pytest.fixture()
 def hidden_matches(engine, monkeypatch) -> dict:
     """``marker=private`` matches only a private record and ``marker=beta`` only a
-    record of project beta; counters on every read start after seeding."""
+    record of project beta, beside a public record that keeps the store non-empty
+    to the caller; counters on every read start after seeding."""
     paths = {
         "private": _save(engine, "hidden-private", _resolved_text(1),
                          metadata={"marker": "private", **_PRIVATE}),

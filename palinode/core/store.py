@@ -1893,8 +1893,9 @@ def list_recent(
 
 
 def list_chunks_matching(conditions: list[tuple[str, str]]) -> list[dict[str, Any]]:
-    """The chunks whose indexed frontmatter satisfies every ``where`` condition,
-    each as its ``id``, ``file_path`` and parsed ``metadata``.
+    """The chunks whose indexed frontmatter satisfies every ``where`` condition.
+
+    Each is its ``id``, ``file_path`` and parsed ``metadata``.
 
     Uses :func:`palinode.core.where.matches_where`, the rule list applies to files.
     """

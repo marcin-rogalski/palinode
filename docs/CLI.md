@@ -1889,7 +1889,7 @@ palinode search "which database do we use" --resolve full
 
 `--where` takes the entries `palinode list --where` takes and is applied before
 the retrieval limit, so a match is never lost for ranking below records that do
-not match. Visibility, lifecycle and date filters still run on the bounded window
+not match. Visibility, lifecycle, telemetry and date filters still run on the bounded window
 that retrieval returns. When no match is a record you may see, search returns no
 results and does not embed the query.
 Search matches the copy of the front matter in the index. A front-matter-only

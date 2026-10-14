@@ -711,6 +711,18 @@ def test_cli_search_is_unscoped_when_the_server_config_says_so(store, client_in_
     assert "Scope: none (disabled)" in unscoped.output
 
 
+def test_cli_search_without_context_reports_the_servers_reason(store, client_in_alpha, monkeypatch):
+    from palinode.cli._api import api_client
+    from palinode.cli.search import search as cli_search
+
+    args = [QUESTION, "--no-context", "--limit", "10", "--threshold", "0", "--format", "text"]
+    with TestClient(app) as client:
+        monkeypatch.setattr(api_client, "client", _ServerWithContextOff(client))
+        result = CliRunner().invoke(cli_search, args)
+    assert result.exit_code == 0, result.output
+    assert "Scope: none (disabled)" in result.output
+
+
 @pytest.mark.asyncio
 async def test_mcp_search_is_unscoped_when_the_server_config_says_so(store, client_in_alpha, monkeypatch):
     with TestClient(app) as client:

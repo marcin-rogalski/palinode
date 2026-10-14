@@ -35,14 +35,18 @@ function captureSearchTool(): { parameters: any; execute: Execute } {
   return captured;
 }
 
-describe("palinode_search takes no where", () => {
-  it("declares no where parameter", () => {
+describe("palinode_search takes where", () => {
+  it("declares where as an array of strings", () => {
     const { parameters } = captureSearchTool();
 
-    expect(Object.keys(parameters.properties)).not.toContain("where");
+    const where = parameters.properties.where;
+    expect(where).toBeDefined();
+    expect(where.type).toBe("array");
+    expect(where.items.type).toBe("string");
+    expect(parameters.required ?? []).not.toContain("where");
   });
 
-  it("sends no where field, whatever the caller passes", async () => {
+  it("sends each entry as a list in the request body", async () => {
     const bodies: Record<string, unknown>[] = [];
     global.fetch = async (_url: any, init?: any) => {
       if (init?.body) bodies.push(JSON.parse(init.body));
@@ -50,7 +54,22 @@ describe("palinode_search takes no where", () => {
     };
     const { execute } = captureSearchTool();
 
-    await execute("call-1", { query: "release checklist", where: ["status=open"] });
+    await execute("call-1", { query: "release checklist", where: ["status=open", "entities=project/my-app"] });
+
+    const searchBodies = bodies.filter((body) => body.query === "release checklist");
+    expect(searchBodies).toHaveLength(1);
+    expect(searchBodies[0].where).toEqual(["status=open", "entities=project/my-app"]);
+  });
+
+  it("sends no where field when the caller passes none", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    global.fetch = async (_url: any, init?: any) => {
+      if (init?.body) bodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify([]), { status: 200 });
+    };
+    const { execute } = captureSearchTool();
+
+    await execute("call-1", { query: "release checklist" });
 
     const searchBodies = bodies.filter((body) => body.query === "release checklist");
     expect(searchBodies).toHaveLength(1);

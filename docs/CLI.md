@@ -1870,6 +1870,7 @@ store. Filters narrow by directory, type, priority, date, and recency;
 | `--threshold FLOAT` | from config | Similarity threshold 0.0–1.0; higher is stricter |
 | `--since-days INTEGER` | none | Only memories created/updated in the last N days |
 | `--types TYPE` | all | Filter by memory type; repeatable |
+| `--where KEY=VALUE` | none | Only memories whose frontmatter has `KEY` equal to `VALUE`; repeatable, all must match (as for `palinode list`) |
 | `--min-priority INTEGER` | none | Only memories with priority ≥ N (missing counts as 3) |
 | `--date-after TEXT` / `--date-before TEXT` | none | ISO date bounds on created/updated |
 | `--include-daily` | off | Rank `daily/` session notes at full weight (default: penalised) |
@@ -1885,6 +1886,16 @@ palinode search "database decision for cache" --limit 5 --score
 palinode search "auth" --category decisions --since-days 30 --format json
 palinode search "which database do we use" --resolve full
 ```
+
+`--where` takes the entries `palinode list --where` takes and is applied before
+the retrieval limit, so a match is never lost for ranking below records that do
+not match. Visibility, lifecycle, telemetry and date filters still run on the bounded window
+that retrieval returns. When no match is a record you may see, search returns no
+results and does not embed the query.
+Search matches the copy of the front matter in the index. A front-matter-only
+edit reaches the index on the file's next index pass, so until then search and
+list can disagree. A save through the API indexes inline, so in practice this
+affects a file edited by hand and not yet picked up by the watcher.
 
 Text output opens with the scope the search ran under and the source that
 decided it — `Scope: project/harbor-notes (environment)` for a pinned

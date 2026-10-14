@@ -755,6 +755,34 @@ def test_an_empty_match_set_with_the_embedder_down_answers_200(semantic_engine, 
     assert something.status_code == (503 if query else 200)
 
 
+@pytest.mark.parametrize("hidden", ["private", "beta"])
+def test_a_hidden_only_match_with_the_embedder_down_answers_as_no_match_does(
+    semantic_engine, monkeypatch, hidden
+):
+    """A 503 here would tell the caller that a record it may not see matches."""
+    _save(semantic_engine, "hidden-private", _resolved_text(1),
+          metadata={"marker": "private", **_PRIVATE})
+    _save(semantic_engine, "hidden-beta", _resolved_text(2),
+          metadata={"marker": "beta"}, entities=["project/beta"])
+
+    def embedder_down(text):
+        raise embedder.EmbeddingUnavailable(
+            backend="local", model="bge-m3", text_len=len(text), cause="connection refused"
+        )
+
+    monkeypatch.setattr(embedder, "embed", embedder_down)
+    body = {**semantic_engine.fields, "query": _KEYWORD, "threshold": 0.0, "receipt": True,
+            "context": ["project/alpha"]}
+
+    response = semantic_engine.post("/search", json={**body, "where": [f"marker={hidden}"]})
+    nothing = semantic_engine.post("/search", json={**body, "where": ["marker=nonexistent"]})
+
+    assert response.status_code == nothing.status_code == 200, response.text
+    assert response.json()["results"] == []
+    outcome = response.json()["receipt"]["retrieval"]["outcome"]
+    assert outcome == nothing.json()["receipt"]["retrieval"]["outcome"]
+
+
 def test_an_empty_match_set_reports_the_mode_the_request_asked_for(semantic_engine):
     """The receipt of an empty answer names the retrieval mode as it does for a
     full one: ``vector`` when the request turned the keyword arm off."""

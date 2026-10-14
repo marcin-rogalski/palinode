@@ -445,7 +445,8 @@
           "ResearchRef",
           "ActionItem"
         ]
-      }
+      },
+      "where": {}
     },
     "required": [
       "query"

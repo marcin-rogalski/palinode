@@ -6,6 +6,8 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Search filters on frontmatter with `where`, before it ranks.** It takes the same entries as list and matches them the same way. The matching chunks are found before anything ranks, and both the vector and the keyword arm rank only those, so a `where` match is never lost for ranking below records that do not match. `where` is applied before the retrieval limit; visibility, lifecycle, telemetry and date filters still run on the bounded window. An empty-query search lists the newest matching records. When no match is a record the caller may see (it is private, or another project's under project isolation), search answers with no results without embedding the query, and counts in `other_projects_withheld` every other-project record `where` matched, before the request's other filters. On `POST /search` it is a JSON list, on the CLI a repeatable `palinode search --where`, and on the MCP `palinode_search` tool an array; the OpenClaw plugin's `palinode_search` passes it through. A malformed entry is refused as it is on list.
+
 ### Changed
 
 - **`palinode --help` names `PALINODE_DIR`.** It says the variable names the memory directory and the `palinode.config.yaml` read from it, that `~/palinode` is used when it is unset, and that with no config file Palinode runs on built-in defaults ([#246](https://github.com/phasespace-labs/palinode/issues/246)).

@@ -237,6 +237,21 @@ def test_index_failure_is_logged_and_timer_retired(tmp_store, controlled_timers,
         handler.shutdown()
 
 
+# Bound on real OS event delivery, not a latency claim. FSEvents latency follows
+# fseventsd's system-wide load: measured 0.5-7 s for one event on a busy macOS
+# host with this test running alone, and past 10 s while parallel test workers
+# churn files and repositories under the same temp root. The assertion is
+# convergence, so the bound only has to be finite.
+_OBSERVER_CONVERGENCE_S = 30.0
+
+
+#
+# ``serial``: the event source is a system-wide daemon (fseventsd), so no
+# per-test isolation can shield it from other workers' file churn. Under
+# ``pytest -n`` it saw no event at all for 30 s; CI runs ``serial`` tests in a
+# separate pass after the parallel one.
+@pytest.mark.serial
+@pytest.mark.timeout(120)  # two convergence waits must fit under the suite's 60 s
 def test_real_observer_indexes_final_content(tmp_store):
     """Real OS delivery converges after a later edit; no coalescing deadline claim."""
     root = os.path.realpath(str(tmp_store))
@@ -251,14 +266,14 @@ def test_real_observer_indexes_final_content(tmp_store):
                 fh.write(_doc("FIRST via observer."))
             assert _wait_until(
                 lambda: any("FIRST via observer" in b for b in _bodies()),
-                timeout=10.0,
+                timeout=_OBSERVER_CONVERGENCE_S,
             ), _bodies()
             with open(path, "w") as fh:
                 fh.write(_doc("SECOND via observer."))
 
             assert _wait_until(
                 lambda: any("SECOND via observer" in b for b in _bodies()),
-                timeout=10.0,
+                timeout=_OBSERVER_CONVERGENCE_S,
             ), _bodies()
             observer.stop()
             observer.join(5)

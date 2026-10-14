@@ -621,6 +621,51 @@ def test_chat_completions_timeout_raises_typed():
         )
 
 
+def _chat_call(client, base_url):
+    return client.chat_completions(
+        [{"role": "user", "content": "hi"}], model="m", base_url=base_url,
+        retries=0, role=OllamaRole.CHAT,
+    )
+
+
+def test_dead_primary_does_not_fast_fail_its_fallback_host(monkeypatch):
+    """Fallback hosts get their own breaker: an open primary must not block them."""
+    monkeypatch.setattr(config.auto_summary, "ollama_url", "http://primary:1237")
+
+    def handler(request):
+        if request.url.host == "primary":
+            raise httpx.ConnectError("down", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "backup"}}]})
+
+    client, _, _ = make_client(handler, retries=0)
+    for _ in range(5):
+        with pytest.raises(OllamaUnreachable):
+            _chat_call(client, "http://primary:1237/")  # trailing slash: same host
+    assert client.circuit_state(OllamaRole.CHAT) is CircuitState.OPEN
+    with pytest.raises(OllamaCircuitOpen):
+        _chat_call(client, "http://primary:1237")
+    assert _chat_call(client, "http://backup:11434") == "backup"
+
+
+def test_dead_fallback_host_does_not_open_the_role_breaker(monkeypatch):
+    monkeypatch.setattr(config.auto_summary, "ollama_url", "http://primary:1237")
+
+    def handler(request):
+        if request.url.host == "backup":
+            raise httpx.ConnectError("down", request=request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "primary"}}]})
+
+    client, _, _ = make_client(handler, retries=0)
+    for _ in range(5):
+        with pytest.raises(OllamaUnreachable):
+            _chat_call(client, "http://backup:11434")
+    # The backup's own breaker is open now; the role breaker is untouched.
+    with pytest.raises(OllamaCircuitOpen):
+        _chat_call(client, "http://backup:11434")
+    assert client.circuit_state(OllamaRole.CHAT) is CircuitState.CLOSED
+    assert _chat_call(client, "http://primary:1237") == "primary"
+
+
 # ── why the model stopped ─────────────────────────────────────────────────
 # Truncation used to be invisible: a consolidation response cut off at
 # max_tokens came back as a bare str, parsed to zero operations, and was

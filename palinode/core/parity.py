@@ -621,6 +621,7 @@ REGISTRY: tuple[Operation, ...] = (
     Operation(
         name="resolve",
         canonical_params=(
+            CanonicalParam(name="prompt", type="boolean"),
             CanonicalParam(name="query", type="string"),
             CanonicalParam(name="ref", type="string"),
             CanonicalParam(name="context", type="array"),
@@ -815,6 +816,59 @@ REGISTRY: tuple[Operation, ...] = (
         ),
         cli_command="aliases remove",
         api_endpoint=("POST", "/aliases/remove"),
+        exempt_surfaces=frozenset({"mcp"}),
+        known_drift={},
+    ),
+    # ── handoff (selective project-memory export and import) ──────────
+    # CLI + REST only, MCP-exempt by design. What leaves a store is the
+    # sender's deliberate choice; an agent that could export could pick which
+    # records leave on its own. Plugin: none (ADR-019). The CLI writes the
+    # bundle to a local file with --out.
+    Operation(
+        name="handoff.export",
+        canonical_params=(
+            CanonicalParam(name="project", type="string", required=True),
+            CanonicalParam(name="types", type="array"),
+            CanonicalParam(name="paths", type="array"),
+            CanonicalParam(name="include", type="array"),
+            CanonicalParam(name="since", type="string"),
+            CanonicalParam(
+                name="expect_digest",
+                type="string",
+                notes="The preview's digest. Absent means preview only.",
+            ),
+        ),
+        cli_command="handoff export",
+        api_endpoint=("POST", "/handoff/export"),
+        exempt_surfaces=frozenset({"mcp"}),
+        known_drift={},
+    ),
+    # Import: CLI + REST only for the same reason. What enters a store is the
+    # recipient's choice; an agent that could import could plant records. The
+    # CLI reads the bundle file and sends its contents as ``bundle``.
+    Operation(
+        name="handoff.import",
+        canonical_params=(
+            CanonicalParam(name="bundle", type="object", required=True,
+                           notes="The bundle file's contents. The CLI takes a path."),
+            CanonicalParam(name="project", type="string"),
+        ),
+        cli_command="handoff import",
+        api_endpoint=("POST", "/handoff/import"),
+        exempt_surfaces=frozenset({"mcp"}),
+        known_drift={},
+    ),
+    Operation(
+        name="handoff.import_apply",
+        canonical_params=(
+            CanonicalParam(name="bundle", type="object", required=True,
+                           notes="The bundle file's contents. The CLI takes a path."),
+            CanonicalParam(name="expect_digest", type="string", required=True,
+                           notes="The import preview's digest."),
+            CanonicalParam(name="project", type="string"),
+        ),
+        cli_command="handoff import",
+        api_endpoint=("POST", "/handoff/import/apply"),
         exempt_surfaces=frozenset({"mcp"}),
         known_drift={},
     ),
@@ -1081,6 +1135,10 @@ INVENTORY_INFRA: dict[Surface, frozenset[str]] = {
             # One-off importers (ADMIN_EXEMPT) + local sync/scaffolding helpers
             "import from-vault",
             "init",
+            # Refreshes the hook scripts on the machine running the agent harness,
+            # which is often not the server host; a remote twin would inspect the
+            # wrong filesystem. CLI-only, surfaced by the hooks_current doctor check.
+            "hooks update",
             "mcp-config",
             "mcp-smoke",
             "migrate bullets",

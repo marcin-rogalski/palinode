@@ -38,6 +38,9 @@ Contributions welcome via pull request. Names appear here once a PR is merged.
 - [kevin-lozada-santos](https://github.com/kevin-lozada-santos)
 - [Tom Tang](https://github.com/TomTang701)
 - [NesrineGharbi77](https://github.com/NesrineGharbi77)
+- [Vishal Habib](https://github.com/vishalhabib99)
+- [Marcin Rogalski](https://github.com/marcin-rogalski)
+- [Isaac Emmanuel](https://github.com/1cbyc)
 
 ## Acknowledgements
 

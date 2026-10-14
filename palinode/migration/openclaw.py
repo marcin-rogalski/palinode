@@ -97,8 +97,21 @@ def _sha256(content: str) -> str:
     return hashlib.sha256(content.encode(), usedforsecurity=False).hexdigest()
 
 
+def _body_hash(text: str) -> str:
+    """SHA-256 of a memory's body, frontmatter excluded.
+
+    The frontmatter carries a per-run ``last_updated`` stamp, so a whole-file
+    hash never matches an earlier run's output and every re-run would look new.
+    """
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            text = parts[2]
+    return _sha256(text.strip())
+
+
 def _existing_hashes(memory_dir: str) -> set[str]:
-    """Collect SHA-256 hashes of all existing .md files for dedup."""
+    """Collect body hashes of all existing .md files for dedup."""
     hashes: set[str] = set()
     for root, _dirs, files in os.walk(memory_dir):
         for fname in files:
@@ -107,7 +120,7 @@ def _existing_hashes(memory_dir: str) -> set[str]:
             fpath = os.path.join(root, fname)
             try:
                 with open(fpath, "r", encoding="utf-8") as f:
-                    hashes.add(_sha256(f.read()))
+                    hashes.add(_body_hash(f.read()))
             except OSError:
                 pass
     return hashes
@@ -227,11 +240,13 @@ def run_sections_migration(
         sections = review_callback(sections)
 
     now_iso = datetime.now(UTC).isoformat()
-    existing_hashes: set[str] = set() if dry_run else _existing_hashes(memory_dir)
+    existing_hashes = _existing_hashes(memory_dir)
 
     files_created: list[str] = []
     files_skipped: list[str] = []
+    files_renamed: list[dict[str, str]] = []
     written_abs: list[str] = []
+    planned_paths: set[str] = set()
 
     for section in sections:
         rel_path, content = _build_file_content(
@@ -240,12 +255,28 @@ def run_sections_migration(
             validated_source,
             source_name,
         )
-        content_hash = _sha256(content)
+        content_hash = _body_hash(content)
 
         if content_hash in existing_hashes:
             files_skipped.append(rel_path)
             continue
 
+        original_path = rel_path
+        if rel_path in planned_paths or os.path.lexists(os.path.join(memory_dir, rel_path)):
+            stem = f"{rel_path[:-3]}-openclaw-{content_hash[:8]}"
+            rel_path = f"{stem}.md"
+            suffix = 2
+            while rel_path in planned_paths or os.path.lexists(os.path.join(memory_dir, rel_path)):
+                rel_path = f"{stem}-{suffix}.md"
+                suffix += 1
+            files_renamed.append({"from": original_path, "to": rel_path})
+            # The id is derived from the slug, so rebuild under the renamed slug:
+            # the new file must not share the id of the memory it collided with.
+            renamed = {**section, "slug": os.path.basename(rel_path)[:-3]}
+            _, content = _build_file_content(renamed, now_iso, validated_source, source_name)
+
+        existing_hashes.add(content_hash)
+        planned_paths.add(rel_path)
         if dry_run:
             files_created.append(rel_path)
             continue
@@ -254,7 +285,6 @@ def run_sections_migration(
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         git_tools.write_memory_file(abs_path, content)
 
-        existing_hashes.add(content_hash)
         files_created.append(rel_path)
         written_abs.append(abs_path)
         logger.info("Created %s", rel_path)
@@ -274,12 +304,17 @@ def run_sections_migration(
             f"Sections found: {len(sections)}",
             f"Files created: {len(files_created)}",
             f"Files skipped (dedup): {len(files_skipped)}",
+            f"Files renamed: {len(files_renamed)}",
             "",
             "## Created",
             "",
         ]
         for fp in files_created:
             log_lines.append(f"- `{fp}`")
+        if files_renamed:
+            log_lines.extend(["", "## Renamed (path collision)", ""])
+            for rename in files_renamed:
+                log_lines.append(f"- `{rename['from']}` → `{rename['to']}`")
         if files_skipped:
             log_lines.extend(["", "## Skipped (duplicate content)", ""])
             for fp in files_skipped:
@@ -295,6 +330,7 @@ def run_sections_migration(
         "sections_found": len(sections),
         "files_created": files_created,
         "files_skipped": files_skipped,
+        "files_renamed": files_renamed,
         "log_file": log_rel,
         "dry_run": dry_run,
     }
@@ -320,6 +356,7 @@ def run_migration(
             sections_found: int
             files_created: list[str]   — relative paths written
             files_skipped: list[str]   — relative paths skipped (dedup)
+            files_renamed: list[dict]  — original and renamed relative paths
             log_file: str | None       — relative path of the migration log
             dry_run: bool
     """

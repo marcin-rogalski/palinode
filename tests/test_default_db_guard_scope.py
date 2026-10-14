@@ -117,7 +117,9 @@ def guard_scope_run(tmp_path_factory: pytest.TempPathFactory) -> str:
 
     env = {
         **os.environ,
-        "PALINODE_DIR": str(memory_dir),
+        # The conftest replaces an inherited ``PALINODE_DIR`` with an empty
+        # sandbox of its own; ``PALINODE_TEST_DIR`` is how a harness names one.
+        "PALINODE_TEST_DIR": str(memory_dir),
         "PALINODE_GUARD_SCOPE_SANDBOX": str(root),
         "PYTHONPATH": str(REPO_ROOT),
     }

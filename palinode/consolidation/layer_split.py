@@ -32,6 +32,42 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _read_layer(path: str) -> tuple[dict, str, str]:
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+    parts = content.split("---", 2)
+    if len(parts) < 3 or not content.startswith("---"):
+        raise ValueError(f"{path}: existing layer has no frontmatter")
+    metadata = yaml.safe_load(parts[1])
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{path}: existing layer frontmatter is not a mapping")
+    return metadata, parts[2].strip(), content
+
+
+def _inherit_privacy(layer_meta: dict, source_meta: dict) -> dict:
+    source_visibility = source_meta.get("visibility")
+    layer_visibility = layer_meta.get("visibility")
+    if layer_visibility in ("private", "restricted"):
+        if source_visibility in ("private", "restricted") and layer_visibility != source_visibility:
+            raise ValueError("existing layer has conflicting privacy frontmatter")
+        for key in ("scope", "access"):
+            if key in source_meta and key in layer_meta and source_meta[key] != layer_meta[key]:
+                raise ValueError("existing layer has conflicting privacy frontmatter")
+        for key in ("scope", "access"):
+            if key in source_meta and key not in layer_meta:
+                layer_meta[key] = source_meta[key]
+        return layer_meta
+    if source_visibility in ("private", "restricted"):
+        for key in ("visibility", "scope", "access"):
+            if key in source_meta:
+                layer_meta[key] = source_meta[key]
+    else:
+        for key in ("visibility", "scope", "access"):
+            if key in source_meta and key not in layer_meta:
+                layer_meta[key] = source_meta[key]
+    return layer_meta
+
+
 def split_file(file_path: str) -> dict:
     """Split a memory file into Identity + Status + History layers.
     
@@ -157,6 +193,17 @@ def split_file(file_path: str) -> dict:
     base = os.path.splitext(file_path)[0]
     name = os.path.basename(base)
     dir_path = os.path.dirname(file_path)
+    status_path = os.path.join(dir_path, f"{name}-status.md")
+    history_path = os.path.join(dir_path, f"{name}-history.md")
+    status_prior = _read_layer(status_path) if status_sections and os.path.exists(status_path) else None
+    history_prior = _read_layer(history_path) if os.path.exists(history_path) else None
+    if status_prior:
+        _inherit_privacy(dict(status_prior[0]), metadata)
+    history_privacy = dict(metadata)
+    if status_prior:
+        _inherit_privacy(history_privacy, status_prior[0])
+    if history_prior:
+        _inherit_privacy(dict(history_prior[0]), history_privacy)
     
     results = {}
     if hint_ignored:
@@ -180,18 +227,18 @@ def split_file(file_path: str) -> dict:
     
     # Status file (core:true)
     if status_sections:
-        status_path = os.path.join(dir_path, f"{name}-status.md")
-        st_meta = {
+        st_meta = dict(status_prior[0]) if status_prior else {
             'id': f"{id_meta.get('id', name)}-status",
             'category': metadata.get('category', ''),
-            'core': True,
-            'layer': 'status',
             'parent': id_meta.get('id', name),
-            'last_updated': _utc_now().isoformat(),
         }
-        if metadata.get('summary'):
+        st_meta['core'] = True
+        st_meta['layer'] = 'status'
+        st_meta['last_updated'] = _utc_now().isoformat()
+        _inherit_privacy(st_meta, metadata)
+        if not status_prior and metadata.get('summary'):
             st_meta['summary'] = f"Current status: {metadata['summary'][:80]}"
-        if metadata.get('entities'):
+        if not status_prior and metadata.get('entities'):
             st_meta['entities'] = metadata['entities']
         
         st_content = f"---\n{yaml.dump(st_meta, default_flow_style=False)}---\n\n"
@@ -202,21 +249,25 @@ def split_file(file_path: str) -> dict:
     
     # History file (core:false). Seeded empty when there is nothing to archive yet,
     # so the layer always exists.
-    history_path = os.path.join(dir_path, f"{name}-history.md")
-    history_body = "\n\n".join(s for s in history_sections if s.strip())
-    history_exists = os.path.exists(history_path)
+    history_body = "\n\n".join(
+        s for s in ([status_prior[1]] if status_prior else []) + history_sections if s.strip()
+    )
+    history_exists = history_prior is not None
 
     if history_exists:
         # A history file accumulates archived material, so content is *appended*.
         # Rewriting it wholesale would destroy the superseded facts the layer
         # exists to preserve — the same silent data loss this branch is here to
-        # avoid. Existing frontmatter is left untouched: it may carry a
-        # `status: archived` flag written by the consolidation executor.
-        if history_body:
-            with open(history_path, encoding="utf-8") as f:
-                existing = f.read()
+        # avoid. Existing frontmatter, including `status: archived`, is kept;
+        # privacy fields are added when the source requires them.
+        existing_meta, _, existing = history_prior
+        protected_meta = _inherit_privacy(dict(existing_meta), history_privacy)
+        if protected_meta != existing_meta:
+            existing = f"---\n{yaml.dump(protected_meta, default_flow_style=False)}---\n\n" + history_prior[1]
+        if history_body or protected_meta != existing_meta:
             git_tools.write_memory_file(
-                history_path, existing.rstrip("\n") + "\n\n" + history_body + "\n"
+                history_path,
+                existing.rstrip("\n") + ("\n\n" + history_body if history_body else "") + "\n",
             )
             results['history'] = history_path
     else:
@@ -228,6 +279,7 @@ def split_file(file_path: str) -> dict:
             'parent': id_meta.get('id', name),
             'created_at': _utc_now().isoformat(),
         }
+        _inherit_privacy(h_meta, history_privacy)
         if metadata.get('entities'):
             h_meta['entities'] = metadata['entities']
 
@@ -269,6 +321,7 @@ def split_all_core_files() -> dict:
         "triggers_registered": 0,
         "hints_ignored": 0,
         "files_with_ignored_hints": [],
+        "files_refused": [],
     }
     
     for d in ["projects", "people"]:
@@ -287,7 +340,14 @@ def split_all_core_files() -> dict:
             if "core: true" not in content:
                 continue
             
-            results = split_file(f)
+            try:
+                results = split_file(f)
+            except ValueError as exc:
+                # One file whose layers cannot be rewritten safely (conflicting
+                # privacy, unreadable frontmatter) must not stop the sweep.
+                logger.warning("layer split refused for %s: %s", f, exc)
+                stats["files_refused"].append(to_rel_path(f))
+                continue
             stats["files_split"] += 1
             if "layer_hint_ignored" in results:
                 stats["hints_ignored"] += 1

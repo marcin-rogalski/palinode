@@ -243,10 +243,10 @@ def session_end_api(req: SessionEndRequest, request: Request = None) -> dict[str
         raise HTTPException(status_code=403, detail=decision.reason)
     # Fail loud BEFORE any write: an envelope stored as memory is silent
     # corruption in a system whose whole claim is audit-grade recall. Safe to
-    # 400 even though session-end is the last call of a session — the SessionEnd
-    # hook's curl uses `-f`, so HTTP >=400 routes the payload to
-    # .claude/session-floor-fallback.jsonl for replay rather than the void, and
-    # an interactive MCP/CLI caller is still live and can re-send corrected.
+    # 400 even though session-end is the last call of a session: the SessionEnd
+    # hook's envelope is a deterministic floor stub whose loss costs little (it
+    # writes no fallback, since a failure may be a capture pause), and an
+    # interactive MCP/CLI caller is still live and can re-send corrected.
     complaint = _first_envelope_complaint(req)
     if complaint:
         logger.warning("session-end rejected: %s", complaint)

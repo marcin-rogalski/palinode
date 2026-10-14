@@ -138,6 +138,7 @@ def _run_query(
     top_k: int,
     counters: dict[str, int],
     abstain: bool = False,
+    shape_prompts: bool = False,
 ) -> tuple[list[dict[str, Any]], str, float, str | None]:
     """Run one query end to end: (results, payload, elapsed ms, verdict).
 
@@ -153,23 +154,30 @@ def _run_query(
     from palinode.core.confidence import assess
 
     started = perf_counter()
+    query = question.ask
+    if question.variant == "prompt" and shape_prompts:
+        from palinode.core.prompt_query import shape_prompt
+
+        query = shape_prompt(query)
     query_vector: list[float] | None = None
-    if mode == "hybrid":
+    if mode == "hybrid" and query:
         try:
-            query_vector = embedder.embed(question.ask)
+            query_vector = embedder.embed(query)
         except embedder.EmbeddingUnavailable:
             # Exactly what /search does with a per-input embed rejection:
             # degrade this one query to the keyword arm rather than fail it.
             counters["keyword_fallback"] += 1
             query_vector = None
 
-    if query_vector is None:
+    if not query:
+        results = []
+    elif query_vector is None:
         results = store.search_hybrid(
-            question.ask, None, top_k=top_k, record_access=False
+            query, None, top_k=top_k, record_access=False
         )
     else:
         results = store.search_hybrid(
-            question.ask,
+            query,
             query_vector,
             top_k=top_k,
             threshold=float(threshold if threshold is not None else 0.0),
@@ -226,6 +234,7 @@ def run_arm(
     top_k: int,
     repeats: int,
     abstain: bool = False,
+    shape_prompts: bool = False,
 ) -> ArmResult:
     """Run every question in one arm and score the delivered payloads."""
     from palinode.core.packing import estimate_tokens
@@ -242,6 +251,7 @@ def run_arm(
             top_k=top_k,
             counters=arm.fallback,
             abstain=abstain,
+            shape_prompts=shape_prompts,
         )
         arm.latency_ms.append(elapsed_ms)
         for _ in range(max(0, repeats - 1)):
@@ -252,6 +262,7 @@ def run_arm(
                 top_k=top_k,
                 counters=arm.fallback,
                 abstain=abstain,
+                shape_prompts=shape_prompts,
             )
             arm.latency_ms.append(extra_ms)
 
@@ -315,6 +326,40 @@ def _arm_payload(arm: ArmResult, *, calls: int) -> dict[str, Any]:
     }
 
 
+def _prompt_bundles(fixture: Fixture, path_to_id: dict[str, str], *, hybrid: bool) -> list[dict[str, Any]]:
+    """Check the actual resolve payload beside search on the same real store."""
+    from palinode.core.bundle import BundleBudget, BundleRequest, build_bundle
+    from palinode.core.config import config
+
+    observations = []
+    original_mode = config.search.retrieval_mode
+    try:
+        for mode in (["lexical", "hybrid"] if hybrid else ["lexical"]):
+            config.search.retrieval_mode = mode
+            for question in fixture.questions:
+                if question.variant != "prompt":
+                    continue
+                bundle = build_bundle(BundleRequest(
+                    query=question.ask, prompt=True,
+                    budget=BundleBudget(max_items=5, max_chars=3000),
+                ))
+                verdict = (bundle.retrieval or {}).get("confidence")
+                refs = [s.assertion.rel_path for s in bundle.selected]
+                refs += [s.rel_path for g in bundle.conflicts for s in g.sides]
+                refs += [i.rel_path for i in bundle.insufficient]
+                ids = [path_to_id.get(os.path.abspath(os.path.join(config.memory_dir, ref)))
+                       for ref in refs if ref]
+                observations.append({
+                    "question_id": question.id, "mode": mode, "verdict": verdict,
+                    "expected": list(question.relevant), "selected": ids,
+                    "would_inject": verdict == "confident" and bool(refs or bundle.omitted_conflicts),
+                    "relevant_selected": bool(set(ids) & set(question.relevant)),
+                })
+    finally:
+        config.search.retrieval_mode = original_mode
+    return observations
+
+
 def evaluate(
     *,
     fixture: Fixture | None = None,
@@ -322,6 +367,7 @@ def evaluate(
     thresholds: Sequence[float] = DEFAULT_THRESHOLDS,
     repeats: int = 3,
     keep_store: bool = False,
+    shape_prompts: bool = False,
 ) -> dict[str, Any]:
     """Build the store, run both modes, and return the full results object."""
     from palinode.core.config import config
@@ -356,6 +402,7 @@ def evaluate(
                 threshold=None,
                 top_k=top_k,
                 repeats=repeats,
+                shape_prompts=shape_prompts,
             ),
             # The same retrieval with `search.abstain_on_no_confident_match`
             # on, so the switch's cost is a measured column beside the default
@@ -368,6 +415,7 @@ def evaluate(
                 threshold=None,
                 top_k=top_k,
                 repeats=repeats,
+                shape_prompts=shape_prompts,
                 abstain=True,
             ),
         ]
@@ -400,9 +448,11 @@ def evaluate(
                         threshold=threshold,
                         top_k=top_k,
                         repeats=repeats,
+                        shape_prompts=shape_prompts,
                         abstain=abstain,
                     )
                 )
+        prompt_bundles = _prompt_bundles(fixture, path_to_id, hybrid=embedder_up) if shape_prompts else []
     finally:
         if keep_store:
             print(f"store kept at {palinode_dir}")
@@ -429,6 +479,8 @@ def evaluate(
             "class_counts": corpus_mod.class_counts(fixture),
             "variant_counts": corpus_mod.variant_counts(fixture),
             "role_counts": corpus_mod.role_counts(fixture),
+            "shape_prompts": shape_prompts,
+            "prompt_questions": sum(q.variant == "prompt" for q in fixture.questions),
             "top_k": top_k,
             "thresholds": list(thresholds),
             "fts_threshold": float(config.search.fts_threshold),
@@ -456,6 +508,7 @@ def evaluate(
             "embedded": ingest.embedded,
         },
         "arms": [_arm_payload(arm, calls=calls) for arm in arms],
+        "prompt_bundles": prompt_bundles,
     }
 
 

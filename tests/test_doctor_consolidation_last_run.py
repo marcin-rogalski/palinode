@@ -43,9 +43,10 @@ def store(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
-def _ctx(store: Path) -> DoctorContext:
+def _ctx(store: Path, *, gate: bool = True) -> DoctorContext:
     cfg = Config()
     cfg.memory_dir = str(store)
+    cfg.consolidation.auto_gate.enabled = gate
     return DoctorContext(config=cfg)
 
 
@@ -109,6 +110,70 @@ def test_both_modes_are_reported_with_their_own_cadence(store: Path) -> None:
     assert "62 h ago, weekly cadence" in result.message
 
 
+@pytest.mark.parametrize(
+    ("mode", "gate", "threshold"),
+    [
+        # A plain schedule: 1.5 cadences.
+        ("nightly", False, 36),
+        ("weekly", False, 252),
+        # Gate on (the default): a quiet store may skip passes up to the gate's
+        # 168 h ceiling, and the next tick runs it — ceiling plus one cadence.
+        ("nightly", True, 192),
+        ("weekly", True, 336),
+    ],
+)
+def test_last_success_age_warns_only_after_cadence_threshold(
+    store: Path, mode: str, gate: bool, threshold: int
+) -> None:
+    _record(store, mode, "success", hours_ago=threshold)
+    assert consolidation_last_run(_ctx(store, gate=gate)).passed is True
+
+    late_store = store / "late"
+    _record(late_store, mode, "success", hours_ago=threshold + 1)
+    result = consolidation_last_run(_ctx(late_store, gate=gate))
+
+    assert result.passed is False
+    assert result.severity == "warn"
+    assert f"{mode} last success is older than {threshold} h" in result.message
+    assert "0 consecutive failures" in result.message
+
+
+def test_lock_refusal_is_reported_as_a_missed_weekly_run(store: Path) -> None:
+    _record(store, "weekly", "success", hours_ago=290)
+    _record(store, "weekly", "lock_refused", hours_ago=122)
+
+    result = consolidation_last_run(_ctx(store))
+
+    assert result.passed is False
+    assert result.severity == "warn"
+    assert "weekly: last run lock_refused" in result.message
+    assert "1 missed run due to consolidation lock" in result.message
+    # The dogfood incident (290 h, gate on): the lock refusal is what warns; the
+    # age alone is inside the gate's ceiling plus a cadence.
+    assert "older than" not in result.message
+
+
+def test_success_clears_a_prior_lock_refusal(store: Path) -> None:
+    _record(store, "weekly", "lock_refused", hours_ago=28)
+    _record(store, "weekly", "success", hours_ago=14)
+
+    result = consolidation_last_run(_ctx(store))
+
+    assert result.passed is True
+    assert "missed run" not in result.message
+
+
+def test_old_gate_stamp_without_outcomes_warns(store: Path) -> None:
+    activity_gate.record_run("weekly", memory_dir=store, now=NOW - timedelta(hours=253))
+
+    result = consolidation_last_run(_ctx(store, gate=False))
+
+    assert result.passed is False
+    assert result.severity == "warn"
+    assert "no outcome recorded yet" in result.message
+    assert "weekly last success is older than 252 h" in result.message
+
+
 # ---------------------------------------------------------------------------
 # 2. The streak
 # ---------------------------------------------------------------------------
@@ -116,7 +181,7 @@ def test_both_modes_are_reported_with_their_own_cadence(store: Path) -> None:
 
 def test_one_partial_is_reported_but_does_not_fail(store: Path) -> None:
     """The 2026-09-15 shape: one partial, the previous night fine."""
-    _record(store, "nightly", "success", hours_ago=38)
+    _record(store, "nightly", "success", hours_ago=34)
     _record(store, "nightly", "partial", hours_ago=14, failed=("palinode",))
 
     result = consolidation_last_run(_ctx(store))
@@ -126,7 +191,7 @@ def test_one_partial_is_reported_but_does_not_fail(store: Path) -> None:
     assert "nightly: last run partial at 2026-09-15T11:00:00Z" in result.message
     assert "failed: palinode" in result.message
     assert "1 consecutive failure;" in result.message
-    assert "last success 2026-09-14T11:00:00Z (38 h ago" in result.message
+    assert "last success 2026-09-14T15:00:00Z (34 h ago" in result.message
     assert "loses a day" not in result.message
 
 
@@ -181,7 +246,7 @@ def test_thresholds_are_the_catchup_bound_with_a_fixed_warn() -> None:
 def test_the_shipped_default_bound_makes_two_failures_a_warning(store: Path) -> None:
     """The message has to be true on a default install: with the shipped 7-day
     bound a single failure costs nothing, so it is not an error."""
-    _record(store, "nightly", "success", hours_ago=38, days=7)
+    _record(store, "nightly", "success", hours_ago=34, days=7)
     _record(store, "nightly", "partial", hours_ago=14, failed=("palinode",), days=7)
 
     one = consolidation_last_run(_ctx(store))

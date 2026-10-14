@@ -10,7 +10,7 @@
 
 import * as path from "path";
 import { Type } from "@sinclair/typebox";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, OpenClawPluginDefinition } from "openclaw/plugin-sdk/core";
 
 // Keep these literals aligned with palinode/core/parity.py. The plugin cannot
 // import Python; tests/test_surface_parity.py enforces exact cross-language drift.
@@ -288,8 +288,8 @@ export type InjectionParts = {
 };
 
 export type InjectionFrame =
-  | { kind: "system"; systemContext: string; prependContext?: never }
-  | { kind: "fallback"; prependContext: string; systemContext?: never };
+  | { kind: "system"; prependSystemContext: string; prependContext?: never }
+  | { kind: "fallback"; prependContext: string; prependSystemContext?: never };
 
 export function composeInjection(parts: InjectionParts, profileName: RecallProfileName): string {
   let injection = `<palinode-memory profile="${profileName}">\n`;
@@ -317,7 +317,7 @@ export function composeInjection(parts: InjectionParts, profileName: RecallProfi
 
 export function composeInjectionFrame(injection: string, systemRoleAvailable = true): InjectionFrame {
   if (systemRoleAvailable) {
-    return { kind: "system", systemContext: injection };
+    return { kind: "system", prependSystemContext: injection };
   }
   return {
     kind: "fallback",
@@ -627,6 +627,7 @@ const palinodePlugin = {
 
             if (!results || results.length === 0) {
               return {
+                details: {},
                 content: [
                   { type: "text", text: diagnostic + "No relevant memories found in Palinode." },
                 ],
@@ -641,6 +642,7 @@ const palinodePlugin = {
               .join("\n\n");
 
             return {
+              details: {},
               content: [
                 {
                   type: "text",
@@ -650,6 +652,7 @@ const palinodePlugin = {
             };
           } catch (err) {
             return {
+              details: {},
               content: [
                 {
                   type: "text",
@@ -741,10 +744,12 @@ const palinodePlugin = {
                 description:
                   "How a save to an EXISTING slug is written (ADR-015). 'append' adds " +
                   "to the document: the existing body is kept and this content lands " +
-                  "under a dated heading beneath it. 'replace' overwrites the body and " +
+                  "under a dated heading beneath it. 'replace' overwrites the body, " +
+                  "keeps record frontmatter except old-body metadata, and " +
                   "marks this a living/current-state document that consolidation will " +
-                  "never supersede/archive into history. Omit and the save overwrites " +
-                  "without marking anything. Persisted as sticky frontmatter.",
+                  "never supersede/archive into history. Omit and the save replaces " +
+                  "the body with the same frontmatter rule, without marking anything. " +
+                  "Persisted as sticky frontmatter.",
               },
             ),
           ),
@@ -825,6 +830,7 @@ const palinodePlugin = {
                 ? "Appended to Palinode"
                 : "Saved to Palinode";
             return {
+              details: {},
               content: [
                 {
                   type: "text",
@@ -834,6 +840,7 @@ const palinodePlugin = {
             };
           } catch (err) {
             return {
+              details: {},
               content: [
                 {
                   type: "text",
@@ -867,14 +874,17 @@ const palinodePlugin = {
             });
             if (result.file_path) {
               return {
+                details: {},
                 content: [{ type: "text", text: `Ingested to Palinode: ${result.file_path}` }],
               };
             }
             return {
+              details: {},
               content: [{ type: "text", text: "URL fetched but no usable content extracted." }],
             };
           } catch (err) {
             return {
+              details: {},
               content: [{ type: "text", text: `Palinode ingest failed: ${String(err)}` }],
             };
           }
@@ -893,6 +903,7 @@ const palinodePlugin = {
           try {
             const stats = await palinodeFetch(cfg.palinodeApiUrl, "/status");
             return {
+              details: {},
               content: [
                 {
                   type: "text",
@@ -902,6 +913,7 @@ const palinodePlugin = {
             };
           } catch (err) {
             return {
+              details: {},
               content: [
                 {
                   type: "text",
@@ -924,7 +936,7 @@ const palinodePlugin = {
         }),
         async execute(_id: string, params: any) {
             const res = await palinodeFetch(cfg.palinodeApiUrl, `/diff?days=${params.days || 7}`);
-            return { content: [{ type: "text", text: res.diff }] };
+            return { details: {}, content: [{ type: "text", text: res.diff }] };
         },
     }, { name: "palinode_diff" });
 
@@ -939,7 +951,7 @@ const palinodePlugin = {
         async execute(_id: string, params: any) {
             const query = params.search ? `?search=${encodeURIComponent(params.search)}` : "";
             const res = await palinodeFetch(cfg.palinodeApiUrl, `/blame/${params.file}${query}`);
-            return { content: [{ type: "text", text: res.blame }] };
+            return { details: {}, content: [{ type: "text", text: res.blame }] };
         },
     }, { name: "palinode_blame" });
 
@@ -962,9 +974,9 @@ const palinodePlugin = {
                     cfg.palinodeApiUrl,
                     `/explain/${encodeURIComponent(params.bundle_id)}?${query.toString()}`,
                 );
-                return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
+                return { details: {}, content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
             } catch (err) {
-                return { content: [{ type: "text", text: `Palinode explain failed: ${String(err)}` }] };
+                return { details: {}, content: [{ type: "text", text: `Palinode explain failed: ${String(err)}` }] };
             }
         },
     }, { name: "palinode_explain" });
@@ -982,18 +994,18 @@ const palinodePlugin = {
                 if (params.unblocked) {
                     const items = await palinodeFetch(cfg.palinodeApiUrl, "/depends/_unblocked");
                     if (!items || items.length === 0) {
-                        return { content: [{ type: "text", text: "No unblocked items found." }] };
+                        return { details: {}, content: [{ type: "text", text: "No unblocked items found." }] };
                     }
                     const lines = items.map((it: any) => `${it.slug}${it.status ? ` (${it.status})` : ""}`);
-                    return { content: [{ type: "text", text: `Unblocked items:\n${lines.join("\n")}` }] };
+                    return { details: {}, content: [{ type: "text", text: `Unblocked items:\n${lines.join("\n")}` }] };
                 }
                 if (!params.slug) {
-                    return { content: [{ type: "text", text: "Error: 'slug' is required unless unblocked=true" }] };
+                    return { details: {}, content: [{ type: "text", text: "Error: 'slug' is required unless unblocked=true" }] };
                 }
                 const res = await palinodeFetch(cfg.palinodeApiUrl, `/depends/${encodeURIComponent(params.slug)}`);
-                return { content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
+                return { details: {}, content: [{ type: "text", text: JSON.stringify(res, null, 2) }] };
             } catch (err) {
-                return { content: [{ type: "text", text: `Palinode depends failed: ${String(err)}` }] };
+                return { details: {}, content: [{ type: "text", text: `Palinode depends failed: ${String(err)}` }] };
             }
         },
     }, { name: "palinode_depends" });
@@ -1020,14 +1032,14 @@ const palinodePlugin = {
                 const candidates = res?.candidates || [];
                 if (candidates.length === 0) {
                     const why = res?.enabled ? "" : " (transcript correction capture is disabled)";
-                    return { content: [{ type: "text", text: `No correction candidates${why}.` }] };
+                    return { details: {}, content: [{ type: "text", text: `No correction candidates${why}.` }] };
                 }
                 const lines = candidates.map((c: any) =>
                     `${c.classification} · ${c.project || "unscoped"} · turn ${c.turn_index}: "${c.span}"`,
                 );
-                return { content: [{ type: "text", text: `${lines.join("\n")}\n\n${res.applied}` }] };
+                return { details: {}, content: [{ type: "text", text: `${lines.join("\n")}\n\n${res.applied}` }] };
             } catch (err) {
-                return { content: [{ type: "text", text: `Palinode corrections failed: ${String(err)}` }] };
+                return { details: {}, content: [{ type: "text", text: `Palinode corrections failed: ${String(err)}` }] };
             }
         },
     }, { name: "palinode_corrections" });
@@ -1042,14 +1054,17 @@ const palinodePlugin = {
     // payload is handed back rather than flattened into a status line.
     // ========================================================================
 
-    const correctionCall = async (phase: string, body: Record<string, unknown>, label: string) => {
+    const correctionCall = async (phase: string, body: Record<string, unknown>, label: string): Promise<{
+        details: Record<string, never>;
+        content: { type: "text"; text: string }[];
+    }> => {
         try {
             const res = await palinodeFetchWithStatus(cfg.palinodeApiUrl, `/corrections/${phase}`, {
                 method: "POST",
                 body: JSON.stringify(body),
             });
             if (res.ok) {
-                return { content: [{ type: "text", text: JSON.stringify(res.body, null, 2) }] };
+                return { details: {}, content: [{ type: "text", text: JSON.stringify(res.body, null, 2) }] };
             }
             const detail = res.body?.detail;
             if (res.status === 409 && detail && typeof detail === "object") {
@@ -1059,11 +1074,11 @@ const palinodePlugin = {
                 const lead = detail.applied === "partial"
                     ? `${label} PARTIALLY applied`
                     : `${label} refused`;
-                return { content: [{ type: "text", text: `${lead}: ${JSON.stringify(detail, null, 2)}` }] };
+                return { details: {}, content: [{ type: "text", text: `${lead}: ${JSON.stringify(detail, null, 2)}` }] };
             }
-            return { content: [{ type: "text", text: `${label} failed: ${res.status} ${res.statusText}` }] };
+            return { details: {}, content: [{ type: "text", text: `${label} failed: ${res.status} ${res.statusText}` }] };
         } catch (err) {
-            return { content: [{ type: "text", text: `${label} failed: ${String(err)}` }] };
+            return { details: {}, content: [{ type: "text", text: `${label} failed: ${String(err)}` }] };
         }
     };
 
@@ -1110,7 +1125,7 @@ const palinodePlugin = {
         }),
         async execute(_id: string, params: any) {
             if (!params.confirm) {
-                return { content: [{ type: "text", text: "Palinode correction apply refused: confirm=true and the preview's expect_revision are both required." }] };
+                return { details: {}, content: [{ type: "text", text: "Palinode correction apply refused: confirm=true and the preview's expect_revision are both required." }] };
             }
             const body = correctionBody(params, [...CORRECTION_KEYS, "expect_revision"]);
             body.confirm = true;
@@ -1128,7 +1143,7 @@ const palinodePlugin = {
         }),
         async execute(_id: string, params: any) {
             if (!params.reason) {
-                return { content: [{ type: "text", text: "Palinode correction dismiss refused: a reason is required — it is the record." }] };
+                return { details: {}, content: [{ type: "text", text: "Palinode correction dismiss refused: a reason is required — it is the record." }] };
             }
             return correctionCall("dismiss", correctionBody(params, ["candidate_id", "reason"]), "Palinode correction dismiss");
         },
@@ -1500,7 +1515,7 @@ const palinodePlugin = {
           }
 
           if (!await automaticAllowed(cfg.palinodeApiUrl, "recall", scope)) return;
-          return { systemContext: injection };
+          return { prependSystemContext: injection };
         } catch (err) {
           api.logger.warn(`openclaw-palinode: recall failed: ${String(err)}`);
         }
@@ -1607,7 +1622,7 @@ const palinodePlugin = {
             }
           });
       },
-      { commands: ["palinode"] },
+      { descriptors: [{ name: "palinode", description: "Palinode memory commands", hasSubcommands: true }] },
     );
 
     // ========================================================================
@@ -1626,6 +1641,6 @@ const palinodePlugin = {
       },
     });
   },
-};
+} satisfies OpenClawPluginDefinition;
 
 export default palinodePlugin;

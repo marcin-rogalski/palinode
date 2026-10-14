@@ -555,3 +555,15 @@ def test_report_names_an_arm_that_did_not_run():
             )
     rendered = report.render(results)
     assert "**NOT RUN**: no embedding endpoint reachable" in rendered
+
+
+def test_prompt_extension_is_synthetic_labelled_and_separate(fixture):
+    extended = corpus_mod.with_prompts(fixture)
+    prompts = [q for q in extended.questions if q.variant == "prompt"]
+    assert len(prompts) == 74
+    assert sum(q.answerable for q in prompts) == 34
+    assert extended.questions[:len(fixture.questions)] == fixture.questions
+    assert any("<system-reminder>" in q.ask for q in prompts)
+    assert any(q.ask.startswith("Implement ") and q.answerable for q in prompts)
+    # Plain coding requests with an answer on record: shaping must not drop them.
+    assert any(q.ask.startswith(("Add ", "Fix ", "Update ")) and q.answerable for q in prompts)

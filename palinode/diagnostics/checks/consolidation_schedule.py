@@ -37,13 +37,14 @@ What it deliberately does not do
 should change is a judgement about what the weekly pass is *for*, and doctor
 does not have it.
 
-*The schedule expression is reported, never compared.*
+*The schedule expression is reported, not compared with the configured schedule.*
 ``consolidation.schedule`` exists in the config but drives nothing — the cron
 tab is an upper bound and the activity gate decides whether a tick does any
 work (see ``docs/OPERATIONS.md``). Flagging ``17 * * * *`` against a declared
 ``0 3 * * 0`` would fire on every host that follows the documented advice. The
 expression is printed because an operator asking "what actually runs" wants it,
-not because a difference means anything.
+not because a difference means anything. Two entries that visibly fire in the
+same minute are flagged because they contend for the same consolidation lock.
 
 Platform and degradation
 ------------------------
@@ -162,6 +163,22 @@ def _parse_schedule(tokens: list[str]) -> str | None:
     if not all(_CRON_FIELD_RE.match(field) for field in fields):
         return None
     return " ".join(fields)
+
+
+def _same_minute_collision(nightly: CronEntry, weekly: CronEntry) -> bool:
+    """Recognize the common daily and Sunday overlap without evaluating cron ranges."""
+    if nightly.schedule is None or weekly.schedule is None:
+        return False
+    night = nightly.schedule.split()
+    week = weekly.schedule.split()
+    if len(night) != 5 or len(week) != 5:
+        return False
+    return (
+        night[:4] == week[:4]
+        and night[2:4] == ["*", "*"]
+        and night[4] == "*"
+        and week[4] in {"0", "7", "*"}
+    )
 
 
 def _parse_days(tokens: list[str]) -> tuple[int | None, str | None]:
@@ -540,6 +557,21 @@ def consolidation_schedule_effective(ctx: DoctorContext) -> CheckResult:
                 configured[mode] if (entry.days_problem or entry.days is None) else entry.days
             )
 
+    collisions = [
+        (night, week)
+        for night in entries
+        for week in entries
+        if night.mode == "nightly"
+        and week.mode == "weekly"
+        and _same_minute_collision(night, week)
+    ]
+    for night, week in collisions:
+        clauses.append(
+            f"nightly and weekly run at the same minute ({night.source} and "
+            f"{week.source}); one will lose the consolidation lock"
+        )
+        problems = True
+
     ceiling_problem = None
     if nightly_effective is not None:
         ceiling_problem = _ceiling_problem(
@@ -576,6 +608,8 @@ def consolidation_schedule_effective(ctx: DoctorContext) -> CheckResult:
         remediation += " Separately: " + _ceiling_remediation(
             ctx.config.consolidation.auto_gate.max_hours_elapsed / _HOURS_PER_DAY
         )
+    if collisions:
+        remediation += " Move the nightly and weekly cron entries to different minutes."
 
     return CheckResult(
         name=CHECK_NAME,

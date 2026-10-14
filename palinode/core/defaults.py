@@ -93,9 +93,31 @@ _SESSION_END_TIMEOUT_SENTINEL: float = 90.0
 #: HTTP request timeout (in seconds) for ``POST /save`` on the CLI and MCP.  A
 #: slow inline embed can outlast it after the write has landed; see
 #: ``embeddings.defer_embed_on_save``.  ``PALINODE_SAVE_TIMEOUT`` overrides it.
-SAVE_TIMEOUT_SECONDS: float = float(
-    __import__("os").environ.get("PALINODE_SAVE_TIMEOUT", "30")
-)
+def _save_timeout_seconds() -> float:
+    # Read at import, so a malformed value must not raise: every entrypoint
+    # imports this module. Same policy as the other env overrides in config.
+    import logging
+    import math
+    import os
+
+    raw = os.environ.get("PALINODE_SAVE_TIMEOUT")
+    if raw is None:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        logging.getLogger("palinode.config").warning(
+            "ignoring malformed env override; keeping the default of 30 s "
+            "var=PALINODE_SAVE_TIMEOUT value=%r",
+            raw,
+        )
+        return 30.0
+    return value
+
+
+SAVE_TIMEOUT_SECONDS: float = _save_timeout_seconds()
 
 # ── Session-end dedup ─────────────────────────────────────────────────
 

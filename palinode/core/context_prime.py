@@ -502,8 +502,13 @@ def _apply_budget(digest: dict[str, Any], budget: Budget) -> dict[str, Any]:
 
 
 def _most_recent_first(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # The file path breaks ties. Files written within one timestamp tick share
+    # an mtime, and without a tie-break their order fell back to directory scan
+    # order, which differs between filesystems and runs.
     return sorted(
-        entries, key=lambda m: order_key(m["elig"], m["mtime"]), reverse=True
+        entries,
+        key=lambda m: (order_key(m["elig"], m["mtime"]), m["file"]),
+        reverse=True,
     )
 
 

@@ -90,10 +90,10 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("project isolation on automatic recall", () => {
   it.each(["semantic", "associative", "triggers", "core"])("withholds another project's %s memory", async source => {
     const result = await register(source).turn();
-    expect(result.systemContext).not.toContain("FOREIGN MEMORY");
-    expect(result.systemContext).not.toContain("other.md");
-    expect(result.systemContext).toContain("HOME MEMORY");
-    if (source !== "triggers") expect(result.systemContext).toContain("GLOBAL MEMORY");
+    expect(result.prependSystemContext).not.toContain("FOREIGN MEMORY");
+    expect(result.prependSystemContext).not.toContain("other.md");
+    expect(result.prependSystemContext).toContain("HOME MEMORY");
+    if (source !== "triggers") expect(result.prependSystemContext).toContain("GLOBAL MEMORY");
     const checks = requests.filter(r => r.endpoint === "/controls/check");
     // Initial permission/scope check and final pause check; no extra resolution trip.
     expect(checks).toHaveLength(2);
@@ -106,7 +106,7 @@ describe("project isolation on automatic recall", () => {
 
   it("uses event cwd when the hook has no workspace", async () => {
     const result = await register().turn({}, { cwd: workspace });
-    expect(result.systemContext).not.toContain("FOREIGN MEMORY");
+    expect(result.prependSystemContext).not.toContain("FOREIGN MEMORY");
     expect(requests[0].body.cwd).toBe(workspace);
   });
 
@@ -118,7 +118,7 @@ describe("project isolation on automatic recall", () => {
 
   it("retains unscoped semantic recall when no project resolves", async () => {
     resolved = null;
-    expect((await register().turn()).systemContext).toContain("GLOBAL MEMORY");
+    expect((await register().turn()).prependSystemContext).toContain("GLOBAL MEMORY");
     expect(requests.find(r => r.endpoint === "/search")?.body).not.toHaveProperty("context");
   });
 });
@@ -127,8 +127,8 @@ describe("automatic cross-ref read scope", () => {
   it.each(["core", "triggers"])("filters legacy cross_refs on %s reads", async source => {
     legacyRefs = true;
     const result = await register(source).turn();
-    expect(result.systemContext).toContain("decisions/home-link");
-    expect(result.systemContext).not.toContain("decisions/foreign-link");
+    expect(result.prependSystemContext).toContain("decisions/home-link");
+    expect(result.prependSystemContext).not.toContain("decisions/foreign-link");
   });
 });
 

@@ -99,6 +99,58 @@ def test_fallback_first_success_wins(fallbacks_on, monkeypatch):
     assert fake.chat_completions.call_count == 2
 
 
+def test_unmetered_fallback_spends_no_budget(fallbacks_on, monkeypatch):
+    monkeypatch.setattr(config.auto_summary, "llm_fallbacks", [
+        {"model": "local-4b", "url": "http://local:11434", "metered": False},
+        {"model": "claude-sonnet-4-5", "url": "http://127.0.0.1:4010"},
+    ])
+    srv._fallback_state["remaining"] = 1
+    fake = MagicMock(name="OllamaClient")
+    fake.chat_completions.return_value = "Local answer."
+    with patch("palinode.api.enrichment.get_ollama_client", return_value=fake):
+        for _ in range(3):
+            assert srv._chat_fallback_oneliner("prompt", 150) == "Local answer."
+    assert srv._fallback_state["remaining"] == 1
+
+
+def test_exhausted_budget_skips_metered_but_tries_unmetered(fallbacks_on, monkeypatch):
+    monkeypatch.setattr(config.auto_summary, "llm_fallbacks", [
+        {"model": "claude-sonnet-4-5", "url": "http://127.0.0.1:4010"},
+        {"model": "local-4b", "url": "http://local:11434", "metered": False},
+    ])
+    srv._fallback_state["remaining"] = 0
+    fake = MagicMock(name="OllamaClient")
+    fake.chat_completions.return_value = "Local answer."
+    with patch("palinode.api.enrichment.get_ollama_client", return_value=fake):
+        assert srv._chat_fallback_oneliner("prompt", 150) == "Local answer."
+    fake.chat_completions.assert_called_once()
+    assert fake.chat_completions.call_args.kwargs["model"] == "local-4b"
+
+
+def test_metered_fallback_charges_once_per_file(fallbacks_on, monkeypatch):
+    monkeypatch.setattr(config.auto_summary, "llm_fallbacks", [
+        {"model": "local-4b", "url": "http://local:11434", "metered": False},
+        {"model": "paid-a", "url": "http://a:1"},
+        {"model": "paid-b", "url": "http://b:1"},
+    ])
+    srv._fallback_state["remaining"] = 5
+    fake = MagicMock(name="OllamaClient")
+    fake.chat_completions.side_effect = [
+        OllamaError("local down"), OllamaError("a down"), "B answered.",
+    ]
+    with patch("palinode.api.enrichment.get_ollama_client", return_value=fake):
+        assert srv._chat_fallback_oneliner("prompt", 150) == "B answered."
+    assert srv._fallback_state["remaining"] == 4
+
+
+def test_fallback_uses_the_callers_timeout(fallbacks_on):
+    fake = MagicMock(name="OllamaClient")
+    fake.chat_completions.return_value = "Shim answer."
+    with patch("palinode.api.enrichment.get_ollama_client", return_value=fake):
+        srv._chat_fallback_oneliner("prompt", 150, 5.0)
+    assert fake.chat_completions.call_args.kwargs["timeout"] == 5.0
+
+
 # ---------------------------------------------------------------------------
 # _generate_description
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {
   "id": "openclaw-palinode",
   "name": "Palinode Memory",
-  "version": "0.2.0",
+  "version": "0.23.0",
   "description": "Persistent memory — files as truth, vectors as search. Injects core memory, extracts from conversations.",
   "configSchema": {
     "additionalProperties": false,
@@ -126,5 +126,15 @@
       "palinode_correction_dismiss",
       "palinode_correction_undo"
     ]
-  }
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "cliCommands": [
+    {
+      "name": "palinode",
+      "description": "Palinode memory commands",
+      "hasSubcommands": true
+    }
+  ]
 }

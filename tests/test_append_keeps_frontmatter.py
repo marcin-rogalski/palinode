@@ -17,7 +17,7 @@ Contract these tests pin:
 * ``ttl`` is never carried, ``expires_at`` is, so an append cannot move expiry;
 * ``entities``: a non-empty list from the caller wins, otherwise the prior list
   carries;
-* ``replace`` and first saves are unchanged.
+* first saves are unchanged; replace saves have separate carry rules.
 
 Tests that carry only the word *red* in their docstring fail on v0.22.0 for the
 stated reason; the rest pass on v0.22.0 and must keep passing.
@@ -169,8 +169,8 @@ def test_first_save_with_append_has_only_what_it_set(memory_dir):
     assert "expires_at" not in meta
 
 
-def test_replace_resave_without_metadata_drops_the_caller_keys(memory_dir):
-    """Replace keeps its meaning of an overwrite in place."""
+def test_replace_resave_without_metadata_keeps_the_record_keys(memory_dir):
+    """Replace overwrites the body while keeping record metadata."""
     path = _save(memory_dir, content=_FIRST, slug="rollout",
                  metadata=_FIRST_METADATA, entities=["project/my-app"], core=True,
                  update_policy="replace")
@@ -179,23 +179,23 @@ def test_replace_resave_without_metadata_drops_the_caller_keys(memory_dir):
     _save(memory_dir, content=_SECOND, slug="rollout", update_policy="replace")
 
     meta = _load(path).metadata
-    assert "title" not in meta
-    assert "status" not in meta
-    assert "core" not in meta
-    assert meta["entities"] == []
-    assert _load(path).content.strip() == _SECOND
+    assert meta["title"] == "Release checklist"
+    assert meta["status"] == "open"
+    assert meta["core"] is True
+    assert meta["entities"] == ["project/my-app"]
+    assert _FIRST not in _load(path).content
+    assert _SECOND in _load(path).content
 
 
-def test_flipping_an_append_record_to_replace_drops_the_caller_keys(memory_dir):
-    """An explicit ``replace`` over a record that declared ``append`` is still an
-    overwrite: nothing carries."""
+def test_flipping_an_append_record_to_replace_keeps_the_record_keys(memory_dir):
+    """An explicit ``replace`` over an append record keeps its metadata."""
     path = _save(memory_dir, content=_FIRST, slug="rollout",
                  metadata=_FIRST_METADATA, update_policy="append")
     _save(memory_dir, content=_SECOND, slug="rollout", update_policy="replace")
 
     meta = _load(path).metadata
-    assert "title" not in meta
-    assert "status" not in meta
+    assert meta["title"] == "Release checklist"
+    assert meta["status"] == "open"
 
 
 # ── red on v0.22.0: the prior front matter is lost ──────────────────────────
@@ -371,7 +371,7 @@ def test_rest_append_keeps_the_prior_front_matter(client):
     assert post.metadata["entities"] == ["project/my-app"]
 
 
-def test_rest_replace_resave_still_drops_the_caller_keys(client):
+def test_rest_replace_resave_keeps_the_record_keys(client):
     first = _post(client, content=_FIRST, slug="rollout",
                   metadata=_FIRST_METADATA, update_policy="replace")
     path = first.json()["file_path"]
@@ -380,5 +380,5 @@ def test_rest_replace_resave_still_drops_the_caller_keys(client):
     assert second.json()["save_outcome"] == "replaced"
 
     meta = _load(path).metadata
-    assert "title" not in meta
-    assert "status" not in meta
+    assert meta["title"] == "Release checklist"
+    assert meta["status"] == "open"

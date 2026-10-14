@@ -516,10 +516,31 @@ def test_the_cli_tells_a_person_how_to_see_them(store, monkeypatch):
     assert "--include-other-projects to see them" in result.output
 
 
-def test_the_hook_delivers_a_bundle_whose_only_news_is_the_withheld_count():
-    from palinode.cli.init import USER_PROMPT_SUBMIT_HOOK_SCRIPT
+def test_the_hook_delivers_a_bundle_whose_only_news_is_the_withheld_count(tmp_path):
+    from test_user_prompt_submit_hook import _context_of, _run_hook
 
-    assert "(.other_projects_withheld // 0)" in USER_PROMPT_SUBMIT_HOOK_SCRIPT
+    line = "2 records from other projects withheld (scope: project/quillon-zzz)."
+    bundle = {
+        "selected": [], "conflicts": [], "replaced": [], "insufficient": [],
+        "omitted_conflicts": 0, "other_projects_withheld": 2,
+        "retrieval": {"confidence": "confident"},
+        "text": f"Nothing in memory answers this.\n{line}",
+    }
+    outputs = []
+    for i, session in enumerate(["isolation-a", "isolation-a", "isolation-b", "isolation-a"]):
+        work = tmp_path / str(i)
+        work.mkdir()
+        proc, log = _run_hook(
+            work, session_id=session, resolve_response=bundle,
+            env={"XDG_CACHE_HOME": str(tmp_path / "cache")},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "/search" not in log.read_text()
+        outputs.append(proc)
+    assert line in _context_of(outputs[0])
+    assert outputs[1].stdout == ""
+    assert line in _context_of(outputs[2])
+    assert outputs[3].stdout == ""
 
 
 # ── doctor: fragmented or unmapped project tags ─────────────────────────────

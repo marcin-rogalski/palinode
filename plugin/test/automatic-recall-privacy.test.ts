@@ -65,10 +65,10 @@ describe("automatic core selection", () => {
     expect(calls.map(({ url }) => url.pathname)).toEqual(["/list", "/read"]);
     expect(calls[0].url.search).toBe("?core_only=true");
     expect(calls[1].url.searchParams.get("file_path")).toBe(listed[0].file);
-    expect(result.systemContext).toContain(body);
-    expect(result.systemContext).toContain(listed[0].file);
-    expect(result.systemContext).toContain("Server summary");
-    expect(result.systemContext).not.toContain("HIDDEN");
+    expect(result.prependSystemContext).toContain(body);
+    expect(result.prependSystemContext).toContain(listed[0].file);
+    expect(result.prependSystemContext).toContain("Server summary");
+    expect(result.prependSystemContext).not.toContain("HIDDEN");
     expect(calls[0].options?.signal).toBe(calls[1].options?.signal);
   });
 
@@ -100,11 +100,11 @@ describe("automatic core selection", () => {
 
   it("reselects after compaction, and skips ordinary mid-turn core by default", async () => {
     const runtime = register();
-    expect((await runtime.turn()).systemContext).toContain(body);
+    expect((await runtime.turn()).prependSystemContext).toContain(body);
     expect(await runtime.turn()).toBeUndefined();
     expect(calls).toHaveLength(2);
     await runtime.hooks.after_compaction();
-    expect((await runtime.turn()).systemContext).toContain(body);
+    expect((await runtime.turn()).prependSystemContext).toContain(body);
     expect(calls).toHaveLength(4);
   });
 
@@ -114,8 +114,8 @@ describe("automatic core selection", () => {
     calls = [];
     const result = await runtime.turn();
     expect(calls.map(({ url }) => url.pathname)).toEqual(["/list"]);
-    expect(result.systemContext).toContain("> Server summary");
-    expect(result.systemContext).not.toContain("VISIBLE SERVER BODY");
+    expect(result.prependSystemContext).toContain("> Server summary");
+    expect(result.prependSystemContext).not.toContain("VISIBLE SERVER BODY");
     api(() => []);
     expect(await runtime.turn()).toBeUndefined();
   });
@@ -127,14 +127,14 @@ describe("automatic core selection", () => {
     expect(await summary.turn()).toBeUndefined();
     const full = register({ midTurnMode: "full" });
     await full.turn();
-    expect((await full.turn()).systemContext).toContain(body);
+    expect((await full.turn()).prependSystemContext).toContain(body);
   });
 
   it("preserves the periodic full-core fallback", async () => {
     const runtime = register();
     await runtime.turn();
     for (let turn = 2; turn < 200; turn++) expect(await runtime.turn()).toBeUndefined();
-    expect((await runtime.turn()).systemContext).toContain(body);
+    expect((await runtime.turn()).prependSystemContext).toContain(body);
     expect(calls).toHaveLength(4);
   });
 
@@ -152,9 +152,9 @@ describe("automatic core selection", () => {
   it("applies per-file and aggregate core caps and stops reading at the budget", async () => {
     api((url) => url.pathname === "/list" ? [...listed, { ...listed[0], file: "decisions/next.md" }] : { content: "X".repeat(500) });
     const result = await register({ recallProfileConfig: { coreMaxCharsPerFile: 20, coreBudget: 100 } }).turn();
-    expect(result.systemContext).toContain("X".repeat(20));
-    expect(result.systemContext).not.toContain("X".repeat(21));
-    expect(result.systemContext).toContain("100 / 100 chars");
+    expect(result.prependSystemContext).toContain("X".repeat(20));
+    expect(result.prependSystemContext).not.toContain("X".repeat(21));
+    expect(result.prependSystemContext).toContain("100 / 100 chars");
     expect(calls.filter(({ url }) => url.pathname === "/read")).toHaveLength(1);
   });
 
@@ -163,8 +163,8 @@ describe("automatic core selection", () => {
     const runtime = register({ midTurnMode: "summary", recallProfileConfig: { coreBudget: 100, totalBudget: 180 } });
     await runtime.turn();
     const result = await runtime.turn();
-    expect(result.systemContext).toContain("100 / 100 chars");
-    expect(result.systemContext).toContain("truncated by recallProfile total budget: 180 chars");
+    expect(result.prependSystemContext).toContain("100 / 100 chars");
+    expect(result.prependSystemContext).toContain("truncated by recallProfile total budget: 180 chars");
   });
 
   it("keeps independent search and associative recall when core is unavailable", async () => {
@@ -175,9 +175,9 @@ describe("automatic core selection", () => {
       return [];
     });
     const result = await register({ recallProfile: "coding" }).turn();
-    expect(result.systemContext).toContain("VISIBLE SEARCH");
-    expect(result.systemContext).toContain("VISIBLE ASSOCIATIVE");
-    expect(result.systemContext).not.toContain("HIDDEN");
+    expect(result.prependSystemContext).toContain("VISIBLE SEARCH");
+    expect(result.prependSystemContext).toContain("VISIBLE ASSOCIATIVE");
+    expect(result.prependSystemContext).not.toContain("HIDDEN");
   });
 });
 
@@ -194,12 +194,12 @@ describe("trigger selection and deployment authentication", () => {
     expect(calls.map(({ url }) => url.pathname)).toEqual(["/check-triggers", "/list", "/read"]);
     expect(calls[1].url.search).toBe("");
     expect(calls[2].url.searchParams.get("file_path")).toBe(listed[0].file);
-    expect(result.systemContext).toContain("Visible trigger");
-    expect(result.systemContext).toContain(body.slice(0, 10));
-    expect(result.systemContext).not.toContain("VISIBLE SERVER BODY");
-    expect(result.systemContext).not.toContain("HIDDEN");
-    expect(result.systemContext).not.toContain("private.md");
-    expect(result.systemContext).not.toContain("restricted.md");
+    expect(result.prependSystemContext).toContain("Visible trigger");
+    expect(result.prependSystemContext).toContain(body.slice(0, 10));
+    expect(result.prependSystemContext).not.toContain("VISIBLE SERVER BODY");
+    expect(result.prependSystemContext).not.toContain("HIDDEN");
+    expect(result.prependSystemContext).not.toContain("private.md");
+    expect(result.prependSystemContext).not.toContain("restricted.md");
   });
 
   it.each(["selection", "read"])("does not use local trigger files after %s failure", async (failure) => {

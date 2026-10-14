@@ -200,6 +200,24 @@
     ]
   ],
   [
+    "/handoff/export",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/handoff/import",
+    [
+      "POST"
+    ]
+  ],
+  [
+    "/handoff/import/apply",
+    [
+      "POST"
+    ]
+  ],
+  [
     "/health",
     [
       "GET"

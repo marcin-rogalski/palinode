@@ -54,6 +54,28 @@ describe("registration", () => {
 });
 
 describe("before_agent_start", () => {
+  it("keys isolation-only delivery on the Pi session manager's id", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+      if (String(url).includes("/controls/check")) return Response.json({ allowed: true });
+      if (String(url).includes("/resolve")) return Response.json({
+        selected: [], conflicts: [], replaced: [], insufficient: [], omitted_conflicts: 0,
+        other_projects_withheld: 2, retrieval: { confidence: "confident" },
+        text: "2 records from other projects withheld (scope: project/alpha).",
+      });
+      return Response.json([]);
+    }));
+    const { pi, handlers } = fakePi();
+    palinode(pi);
+    const turn = (sessionId: string) => handlers.get("before_agent_start")!(
+      { prompt: "what did we decide about the rollback path?" },
+      { sessionManager: { getSessionId: () => sessionId } },
+    );
+    expect(await turn("pi-isolation-a")).toHaveProperty("message");
+    expect(await turn("pi-isolation-a")).toBeUndefined();
+    expect(await turn("pi-isolation-b")).toHaveProperty("message");
+    expect(await turn("pi-isolation-a")).toBeUndefined();
+  });
+
   it("returns recall as a message — and NEVER a systemPrompt", async () => {
     vi.stubGlobal(
       "fetch",
@@ -64,6 +86,7 @@ describe("before_agent_start", () => {
           return new Response(
             JSON.stringify({
               results: [{ rel_path: "decisions/x.md", score: 0.9, snippet: "the decision" }],
+              receipt: { retrieval: { confidence: "confident" } },
             }),
           );
         return new Response("[]");

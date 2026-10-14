@@ -201,7 +201,9 @@ class AutoSummaryConfig:
     # per-/generate-summaries-run cap on files that may escalate to a CHAT
     # fallback. Bounds Anthropic egress when the local chat host is chronically
     # down and one backfill walk spans a large deferred backlog. 0 = unlimited
-    # (explicit opt-out). Only applies when llm_fallbacks is non-empty.
+    # (explicit opt-out). Only applies when llm_fallbacks is non-empty, and only
+    # to entries that are metered: an entry with ``metered: false`` (a free local
+    # host) never spends or is blocked by this budget. Entries default to metered.
     llm_fallback_max_per_run: int = 10
 
 @dataclass

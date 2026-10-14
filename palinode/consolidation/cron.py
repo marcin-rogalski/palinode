@@ -6,12 +6,12 @@ Three-tier memory freshness:
   Tier 2: Nightly dedup (--nightly, UPDATE/SUPERSEDE only, per-project watermark)
   Tier 3: Weekly deep clean (full ops, 3-day lookback)
 
-Crontab examples (times in UTC, target 4am PT = 11:00 UTC during PDT):
+Crontab examples (times in UTC; nightly at 4am PT during PDT):
     # Nightly — lightweight dedup of everything not yet consolidated
     0 11 * * * cd /path/to/palinode && PALINODE_DIR=~/.palinode venv/bin/python -m palinode.consolidation.cron --nightly
 
     # Weekly — full compaction with MERGE/ARCHIVE
-    0 11 * * 0 cd /path/to/palinode && PALINODE_DIR=~/.palinode venv/bin/python -m palinode.consolidation.cron --days 3
+    0 12 * * 0 cd /path/to/palinode && PALINODE_DIR=~/.palinode venv/bin/python -m palinode.consolidation.cron --days 3
 
 ``--days N`` means two different things, one per pass, and the nightly's changed:
 
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import UTC, datetime
 
 from palinode.core.config import config
 from palinode.consolidation import activity_gate
@@ -84,12 +85,21 @@ def main() -> None:
     else:
         logger.info(f"Starting {mode} consolidation (lookback: {lookback or 'config default'} days)...")
 
+    started_at = datetime.now(UTC)
     try:
         if nightly:
             result = run_nightly(lookback_days=lookback)
         else:
             result = run_consolidation(lookback_days=lookback)
     except ConsolidationAlreadyRunning as error:
+        activity_gate.record_outcome(
+            mode,
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+            status="lock_refused",
+            lookback_days=lookback,
+            error=f"{type(error).__name__}: {error}",
+        )
         logger.error("%s", error)
         raise SystemExit(1) from None
 

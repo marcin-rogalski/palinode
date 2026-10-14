@@ -130,9 +130,11 @@ from palinode.core.parity import MEMORY_TYPES
     help=(
         "How a save to an EXISTING slug is written (ADR-015). 'append' adds to "
         "the document: the existing body is kept and this content lands under a "
-        "dated heading beneath it. 'replace' overwrites the body and marks a "
+        "dated heading beneath it. 'replace' overwrites the body, keeps record "
+        "frontmatter except old-body metadata, and marks a "
         "living/current-state document consolidation never supersedes/archives. "
-        "Omit and the save overwrites without marking anything. Persisted as "
+        "Omit and the save replaces the body with the same frontmatter rule "
+        "without marking anything. Persisted as "
         "sticky frontmatter, so the file remembers its regime."
     ),
 )

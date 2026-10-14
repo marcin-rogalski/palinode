@@ -953,6 +953,7 @@ def _stable_text(text: str) -> str:
     clock. That the line is *there*, and that it carries the same id as the
     payload's ``receipt_ref``, is asserted separately.
     """
+    text = re.sub(r"best (vector|keyword) [0-9.]+", r"best \1 <score>", text)
     return _RECEIPT_LINE.sub("Receipt: <bundle-id>", text)
 
 
@@ -968,7 +969,13 @@ def _fixture_view(data: dict) -> dict:
     each was disposed, what lineage is known, what coverage — is pinned here,
     because that is the part a consumer reads.
     """
-    view = dict(data)
+    view = json.loads(json.dumps(data))
+    # FTS5 length normalization includes the temp store path; numerical arm
+    # scores are checked against real search separately, not frozen here.
+    for retrieval in (view.get("retrieval"), (view.get("receipt") or {}).get("retrieval")):
+        for arm in (retrieval or {}).get("arms", {}).values():
+            if arm.get("best") is not None:
+                arm["best"] = "<score>"
     view["text"] = _stable_text(view["text"])
     if view.get("receipt_ref"):
         view["receipt_ref"] = "<bundle-id>"
@@ -984,7 +991,22 @@ def _fixture_view(data: dict) -> dict:
     return view
 
 
+def seed_bounded(mem, *, title=None) -> None:
+    _write(mem, "decisions/window.md", "Watermark advances in bounded nightly windows.",
+           type="Decision", status="active", date="2026-09-01", entities=["project/demo"],
+           **({"title": title} if title else {}))
+    for i in range(4):
+        _write(mem, f"insights/background-{i}.md", "An independent observation about scheduling.",
+               type="Insight", status="active", date="2026-09-01", entities=["project/demo"])
+
+
+def seed_minimal(mem) -> None:
+    seed_bounded(mem, title="Scheduling background " * 80)
+
+
 _SCENARIOS = {
+    "bounded": (seed_bounded, "watermark bounded nightly windows"),
+    "minimal": (seed_minimal, "watermark bounded nightly windows"),
     "current": (seed_current, "endpoint production traffic"),
     "conflict": (seed_conflict, "cache cluster region"),
     "unknown": (seed_unknown, "pipeline throughput ceiling"),
@@ -1091,12 +1113,12 @@ async def test_mcp_forwards_every_canonical_param(monkeypatch):
     await mcp._tool_resolve({
         "query": "q", "ref": "decisions/x", "context": ["decisions/y"],
         "intent": "current_state", "max_items": 3, "max_chars": 500,
-        "include_retired": True,
+        "include_retired": True, "prompt": True,
     })
     assert captured[0] == {
         "query": "q", "ref": "decisions/x", "intent": "current_state",
         "context": ["decisions/y"], "max_items": 3, "max_chars": 500,
-        "include_retired": True,
+        "include_retired": True, "prompt": True,
         "project": "project/harbor-notes",
     }
 

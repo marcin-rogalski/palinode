@@ -65,7 +65,7 @@ MIN_BASE_QUESTIONS = 40
 MIN_PARAPHRASES = 8
 MIN_IDENTIFIERS = 8
 
-VARIANTS: tuple[str, ...] = ("base", "paraphrase", "identifier")
+VARIANTS: tuple[str, ...] = ("base", "paraphrase", "identifier", "prompt")
 
 #: Record roles. The scorer does not branch on role — it exists so the corpus
 #: says what each record is *for*, and so a coverage check can fail when a
@@ -326,6 +326,19 @@ def load_fixture(
     )
     validate(fixture)
     return fixture
+
+
+def with_prompts(fixture: Fixture) -> Fixture:
+    """Add the public-safe prompt set without changing the published questions."""
+    from dataclasses import replace
+
+    with open(os.path.join(os.path.dirname(__file__), "prompts.yaml"), encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    extended = replace(fixture, questions=fixture.questions + tuple(
+        _question(q) for q in raw["questions"]
+    ))
+    validate(extended)
+    return extended
 
 
 def validate(fixture: Fixture) -> None:

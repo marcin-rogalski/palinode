@@ -87,10 +87,13 @@ class TestRetrievalEventSchema:
 
 
 class TestRetrievalLogger:
-    def test_creates_log_directory(self, memory_dir: Path):
+    def test_creates_log_directory_on_first_write(self, memory_dir: Path):
         audit_dir = memory_dir / ".audit"
         audit_dir.rmdir()  # remove it so we can test auto-creation
         _rl = RetrievalLogger(str(memory_dir), enabled=True)
+        # Constructed at ``palinode.api._util`` import: building it must not touch disk.
+        assert not audit_dir.exists()
+        _rl.record_file_read("foo.md", source="palinode_read", mode="explicit")
         assert audit_dir.is_dir()
 
     def test_record_writes_entry(self, rl: RetrievalLogger, memory_dir: Path):

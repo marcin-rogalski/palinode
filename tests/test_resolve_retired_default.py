@@ -302,7 +302,7 @@ def test_the_hook_sends_no_history_option():
     # And the resolve payload it builds is the query, the client's scope and
     # the budget, with no history option.
     out = subprocess.run(
-        ["grep", "-n", "{query: $q} + $scope + {max_items: $items, max_chars: $chars}", hook],
+        ["grep", "-n", "{query: $q, prompt: true} + $scope + {max_items: $items, max_chars: $chars}", hook],
         capture_output=True, text=True,
     )
     assert out.returncode == 0, "the hook's /resolve payload shape changed"

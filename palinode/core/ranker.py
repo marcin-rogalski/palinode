@@ -7,8 +7,10 @@ window — live behind one small interface, separable from the I/O around them.
 ``store.search_hybrid`` stays the orchestrator: it does the two retrievals,
 resolves ``context_files`` from the entity index, and records recall +
 freshness on the ranked output. This module touches **no** database,
-filesystem, or network — every input is passed in, so each scoring stage is
-testable on plain dicts.
+filesystem, or network itself — every input is passed in, so each scoring stage
+is testable on plain dicts. The one exception is a caller-supplied ``visible``
+callback for the relative floors, which may read frontmatter; the module only
+calls it.
 
 Knobs that already live in ``config`` (decay band, context boost, daily penalty,
 dedup gap) are read from ``config`` here, matching the rest of the codebase and
@@ -188,7 +190,8 @@ def rank_hybrid(
 ) -> list[dict[str, Any]]:
     """Fuse and re-rank vector + BM25 candidate slates into the final hit list.
 
-    Pure: no DB / filesystem / network. The orchestrator
+    No DB / filesystem / network of its own (a ``visible`` callback, when
+    given, may read frontmatter). The orchestrator
     (:func:`store.search_hybrid`) supplies the two candidate lists, the resolved
     ``context_files`` set (from the entity index), and ``priority_weight`` (the
     ``store``-owned tuning knob); everything else is read from ``config``.
@@ -302,6 +305,10 @@ def rank_hybrid(
     # (:mod:`palinode.core.confidence`) instead of on the rank the fusion
     # leaves behind.
     raw_keyword: dict[str, float] = {}
+    # And what chance would make of the terms that row holds together
+    # (:func:`palinode.core.store.keyword_chance`), which the keyword arm's
+    # verdict needs beside its score.
+    keyword_chance: dict[str, float | None] = {}
 
     # Score vector results
     vec_weight = 1.0 - hybrid_weight
@@ -317,6 +324,7 @@ def rank_hybrid(
         key = f"{r['file_path']}#{r.get('section_id', 'root')}"
         rrf_scores[key] = rrf_scores.get(key, 0) + bm25_weight * (1.0 / (K + rank + 1))
         raw_keyword[key] = r.get("score", 0.0)
+        keyword_chance[key] = r.get("keyword_chance")
         if key not in result_map:
             result_map[key] = r
 
@@ -454,6 +462,7 @@ def rank_hybrid(
         # same as a zero one (see ``scoring.describe_match``).
         result["raw_score"] = raw_cosine.get(key)
         result["keyword_score"] = raw_keyword.get(key)
+        result["keyword_chance"] = keyword_chance.get(key)
         merged.append(result)
 
     return merged

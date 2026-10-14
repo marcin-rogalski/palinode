@@ -20,10 +20,8 @@ What the bundle holds
 ``selected``
     The assertions that stand, each with its currency, index freshness, source
     revision (the raw ``content_hash``), qualifiers, and the refs a follow-up
-    read would use — its linked backing on a ``support:`` line and, one line
-    each, the unlinked records discovery found beside it. An unlinked
-    correction is rendered where the assertion it bears on is, so the packer
-    keeps the two together and the budget is charged for both.
+    read would use. Unlinked, uncontested discovery is bounded in text; its
+    full list remains in the structured result and explicit evidence search.
 ``replaced``
     Records that were superseded or retired, each with its successor when one
     resolved — so a reader can see what moved, not just what is current.
@@ -72,10 +70,12 @@ What the bundle holds
 Conflict-preserving packing
 ---------------------------
 
-The output budget drops **whole units** in priority order: selected first,
+The output budget packs units in priority order: selected first,
 then conflict groups, then the explicit unknowns, then replacements. A
 conflict group is one unit — its sides are never split and a kept item never
-loses a qualifier. When a group cannot fit, the bundle says so out loud:
+loses a qualifier. Standing assertions may use a trimmed statement while
+keeping qualifications and lineage pointers. When a group cannot fit, the
+bundle says so out loud:
 ``coverage`` gains :data:`BUDGET_CONFLICTS`, ``omitted_conflicts`` counts the
 dropped groups and ``omitted_conflict_refs`` lists their refs. Budget pressure
 can make an answer smaller; it can never make a contested answer look settled.
@@ -90,9 +90,8 @@ budget smaller than frame-plus-notice (~300 characters) is overrun rather than
 met. That is the deliberate direction to fail in — a bundle that fit by
 dropping the notice would read as settled.
 
-:func:`_apply_budget` is the one place the cap lives, and it holds no packing
-rule of its own: it renders each outcome into a
-:class:`palinode.core.packing.Unit` and hands the lot to
+:func:`_apply_budget` is the one place the cap lives: it renders each outcome
+into a :class:`palinode.core.packing.Unit` and hands the lot to
 :func:`palinode.core.packing.pack` — the same function the session-start
 digest packs through, so the two injection surfaces cannot disagree about what
 "never split a unit" means. The item cap stays here, because the shared packer
@@ -111,7 +110,8 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Iterable
 
@@ -193,6 +193,8 @@ BUDGET_CHARS = "budget_exhausted:chars"
 #: reason from :data:`BUDGET_CHARS` because the two caps are separate: a
 #: bundle can be well inside its character budget and over its token one.
 BUDGET_TOKENS = "budget_exhausted:tokens"
+#: A standing assertion was delivered in its trimmed, qualified form.
+DEMOTED = "demoted"
 #: No embedder was available, so seeds came from BM25 keyword search alone.
 DEGRADED_KEYWORD_ONLY = "degraded:keyword_only"
 #: The request named a ref that could not be read, or that the requester may
@@ -204,7 +206,7 @@ TARGET_MISSING = "target_missing"
 #: union; nothing outside it is ever emitted.
 BUNDLE_COVERAGE_REASONS: frozenset[str] = frozenset({
     BUDGET_CONFLICTS, BUDGET_ITEMS, BUDGET_CHARS, BUDGET_TOKENS,
-    DEGRADED_KEYWORD_ONLY,
+    DEGRADED_KEYWORD_ONLY, DEMOTED,
 })
 
 #: Hard ceiling on seeds, whatever the caller's item budget says. Evidence
@@ -226,6 +228,7 @@ DEFAULT_MAX_CHARS = 2000
 #: Shorter than the evidence layer's own excerpt on purpose: this is a pointer
 #: with enough text to recognise the claim, not the record.
 DISCOVERY_EXCERPT_CHARS = 120
+RENDERED_DISCOVERIES = 3
 
 
 @dataclass(frozen=True)
@@ -270,6 +273,7 @@ class BundleRequest:
     #: Deliver retired records too, labelled as history. Off by default so
     #: an automatic caller (the per-turn hook) gets what search would give it.
     include_retired: bool = False
+    prompt: bool = False
 
     def __post_init__(self) -> None:
         if not (self.query and self.query.strip()) and not (self.ref and self.ref.strip()):
@@ -337,6 +341,7 @@ class Discovery:
     currency: str
     statement: str
     other_project: tuple[str, ...] = ()
+    contested: bool = False
 
 
 @dataclass(frozen=True)
@@ -356,23 +361,33 @@ class Selected:
     #: proposal beside the decision it did not displace. Refs and kind only.
     alternatives: tuple[dict[str, Any], ...] = ()
     #: The unlinked half of ``refs["support"]``, with each record's currency
-    #: and a short excerpt so the renderer can say what was found rather than
-    #: only that something was. Carried in-process and deliberately **not**
-    #: serialized: every ref here is already in ``refs["support"]``, and the
-    #: structured payload keeps the shape it shipped with.
+    #: and a short excerpt. Structured responses retain the entire list even
+    #: when the renderer carries only a few query-relevant discoveries.
     discovered: tuple[Discovery, ...] = field(default=(), repr=False)
     #: Retired records this one replaced that the request did not ask to see.
     #: Rendered as a count on the ``replaces:`` line and deliberately **not**
     #: serialized: a ref is often a slug of the very value it retired.
     withheld_replaces: tuple[str, ...] = field(default=(), repr=False)
+    #: Only the rendered statement is shortened; structured evidence stays full.
+    trimmed_statement: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             **self.assertion.to_dict(),
             "reasons": list(self.reasons),
             "refs": {k: list(v) for k, v in self.refs.items()},
             "alternatives": [dict(a) for a in self.alternatives],
         }
+        if self.discovered:
+            out["discovered"] = [
+                {"ref": d.ref, "currency": d.currency, "statement": d.statement,
+                 **({"other_project": list(d.other_project)} if d.other_project else {})}
+                for d in self.discovered
+            ]
+        if self.trimmed_statement is not None:
+            out["delivery"] = {"form": "minimal", "statement": self.trimmed_statement,
+                               "unlinked_count": len(self.discovered)}
+        return out
 
 
 @dataclass(frozen=True)
@@ -462,9 +477,12 @@ class Bundle:
     isolation_project: str | None = field(default=None, repr=False)
     #: Retired records left out because the request did not ask for history.
     history_withheld: int = 0
+    retrieval: dict[str, Any] | None = None
+    retrieval_text: str | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "retrieval": dict(self.retrieval) if self.retrieval is not None else None,
             "intent": self.intent,
             "query": self.query,
             "ref": self.ref,
@@ -667,7 +685,7 @@ def _query_seeds(query: str, limit: int) -> tuple[list[dict[str, Any]], set[str]
         embedding = None
     if not embedding:
         reasons.add(DEGRADED_KEYWORD_ONLY)
-        return store.search_fts(query, top_k=limit), reasons
+        return store.search_hybrid(query, None, top_k=limit, record_access=False), reasons
     return (
         store.search_hybrid(
             query_text=query,
@@ -684,7 +702,7 @@ def _query_seeds(query: str, limit: int) -> tuple[list[dict[str, Any]], set[str]
 
 def _collect_seeds(
     request: BundleRequest, chain: ScopeChain | None
-) -> tuple[list[dict[str, Any]], set[str], int]:
+) -> tuple[list[dict[str, Any]], set[str], int, list[dict[str, Any]]]:
     """Seed rows for this request, visibility-gated and de-duplicated by file.
 
     Also returns how many query seeds project isolation withheld. A ref the
@@ -710,22 +728,38 @@ def _collect_seeds(
         reasons.add(TARGET_MISSING)
 
     other_projects: set[str] = set()
+    query_rows: list[dict[str, Any]] = []
     seed_limit = max(1, min(request.budget.max_items, MAX_SEEDS))
-    if request.query and request.query.strip():
-        found, query_reasons = _query_seeds(request.query, seed_limit)
+    query = request.query
+    if query and request.prompt:
+        from palinode.core.prompt_query import shape_prompt
+
+        query = shape_prompt(query)
+    if query and query.strip():
+        found, query_reasons = _query_seeds(query, seed_limit)
         reasons |= query_reasons
         kept = filter_visible(chain, found, other_projects=other_projects)
-        if len(kept) != len(found) and len(found) >= seed_limit:
-            # Hidden seeds consumed the window; look once more, wider, as
-            # ``/search`` does, so isolation cannot starve the request of the
-            # records it may see ranked just below another project's.
-            found, _ = _query_seeds(request.query, seed_limit * _SEED_OVERFETCH)
+        retired = not request.include_retired and any(
+            row.get("currency") == "retired" for row in kept
+        )
+        if (len(kept) != len(found) or retired) and len(found) >= seed_limit:
+            # Hidden or retired seeds can consume the output-sized window.
+            # Look once more within the existing over-fetch bound for current
+            # answers; deduplication below still caps traversal at MAX_SEEDS.
+            # Keep retired seeds: their lineage may lead to a current successor.
+            found, _ = _query_seeds(query, seed_limit * _SEED_OVERFETCH)
             other_projects.clear()
             kept = filter_visible(chain, found, other_projects=other_projects)
+        # A widened window may find orphaned rows behind a stale index. The
+        # source file, not its old indexed body/revision, decides what exists.
+        kept = [row for row in kept if row.get("currency_reason") not in {
+            "source missing", "source unreadable",
+        }]
         # Another project's record is withheld and counted, not a missing
         # target; anything else hidden is reported as before.
         if len(kept) + len(other_projects) != len(found):
             reasons.add(TARGET_MISSING)
+        query_rows = kept
         visible.extend(kept)
 
     seen: set[str] = set()
@@ -738,7 +772,7 @@ def _collect_seeds(
         deduped.append(row)
         if len(deduped) >= MAX_SEEDS:
             break
-    return deduped, reasons, len(other_projects)
+    return deduped, reasons, len(other_projects), query_rows
 
 
 # ── assembly ─────────────────────────────────────────────────────────────────
@@ -834,6 +868,7 @@ def _discoveries(
                 DISCOVERY_EXCERPT_CHARS,
             ),
             other_project=view.other_project if view else (),
+            contested=rec.currency == "contested" or bool(rec.meta.get("contradicts")),
         ))
     return tuple(out)
 
@@ -1097,13 +1132,12 @@ def _unit_refs(kind: str, unit: Any) -> tuple[str, ...]:
 
 
 def _unit_qualifiers(kind: str, unit: Any) -> tuple[str, ...]:
-    """What qualifies a unit — the guard that keeps it from being shortened.
+    """What qualifies a unit — retained even in its minimal rendering.
 
     Reported to the packer rather than merely rendered: a unit that carries
     qualifications may not be demoted to a gist, and the packer enforces that
-    structurally (constructing one with a ``gist`` raises). The bundle offers
-    no gist form at all, so nothing here is ever demoted; naming the
-    qualifications keeps that true by construction rather than by omission.
+    structurally (constructing one with a ``gist`` raises). The bundle's
+    minimal form retains these labels rather than using an unqualified gist.
     """
     if kind in ("selected", "replaced"):
         return unit.assertion.qualifiers
@@ -1122,11 +1156,11 @@ def _apply_budget(
 ) -> _Packed:
     """Fit the bundle to ``budget`` through the shared packer.
 
-    THE ONE PLACE THE CAP LIVES, and it no longer holds a packing rule of its
-    own: every unit goes to :func:`palinode.core.packing.pack`, the same
+    Every unit goes to :func:`palinode.core.packing.pack`, the same
     function the session-start digest packs through. A unit is a standing
     assertion, a conflict group (all its sides), a replacement, or one
-    insufficiency — never a part of one, so nothing kept ever loses a
+    insufficiency. A selected unit that cannot fit uses a minimal rendering
+    with its statement trimmed to the remaining space. Nothing kept loses a
     qualifier and no conflict is ever reduced to one side. A dropped conflict
     group is reported rather than forgotten: the caller sees
     ``budget_exhausted:conflicts`` and the group's refs, which is the
@@ -1152,23 +1186,40 @@ def _apply_budget(
         "selected": selected, "conflict": conflicts,
         "replaced": replaced, "insufficient": insufficient,
     }
-    units = [
-        Unit(
-            kind=unit_kind,
-            text="\n".join(_render_lines(name, item)),
-            priority=priority,
-            refs=_unit_refs(name, item),
-            qualifiers=_unit_qualifiers(name, item),
-            payload=(name, index),
-        )
-        for name, unit_kind, priority in _SECTIONS
-        for index, item in enumerate(groups[name])
-    ]
     reserved = frame_chars + sum(
         len(_section_label(name, len(groups[name]))) + 2
         for name, _kind, _priority in _SECTIONS if groups[name]
     )
     cap = max(0, budget.max_items)
+    used_chars, used_tokens = reserved, _reserved_tokens(reserved)
+    token_cap = _token_cap(budget)
+    units = []
+    for name, unit_kind, priority in _SECTIONS:
+        for index, item in enumerate(groups[name]):
+            text = "\n".join(_render_lines(name, item))
+            available = max(0, budget.max_chars - used_chars - 1)
+            if token_cap:
+                available = min(available, max(0, token_cap - used_tokens) * CHARS_PER_TOKEN)
+            if name == "selected" and len(units) < cap and len(text) > available:
+                minimal = replace(item, trimmed_statement="")
+                overhead = len("\n".join(_render_selected(minimal)))
+                # The minimal form retains every qualification and lineage pointer.
+                # If those alone cannot fit, the original unit is still refused.
+                if overhead + 2 < available:
+                    minimal = replace(minimal, trimmed_statement=_squash(
+                        item.assertion.statement, available - overhead - 1,
+                    ))
+                    item = groups[name][index] = minimal
+                    text = "\n".join(_render_selected(item))
+            unit = Unit(
+                kind=unit_kind, text=text, priority=priority,
+                refs=_unit_refs(name, item), qualifiers=_unit_qualifiers(name, item),
+                payload=(name, index),
+            )
+            if len(units) < cap and len(text) <= available:
+                used_chars += unit.chars
+                used_tokens += unit.tokens
+            units.append(unit)
     over_items = units[cap:]
     result = pack(units[:cap], Budget(
         # ``max_chars = 0`` means "nothing fits" here, not "no cap": a request
@@ -1188,6 +1239,8 @@ def _apply_budget(
         for index, item in enumerate(groups[name]):
             if (name, index) in kept:
                 _keep(packed, name, item)
+                if name == "selected" and item.trimmed_statement is not None:
+                    packed.reasons.add(DEMOTED)
             elif (name, index) in dropped:
                 _omit(packed, name, item)
     if over_items:
@@ -1368,7 +1421,12 @@ def _render_discovery(found: Discovery) -> str:
 
 
 def _render_selected(item: Selected) -> list[str]:
-    lines = [_line(item.assertion)]
+    minimal = item.trimmed_statement is not None
+    assertion = (
+        replace(item.assertion, title=None, statement=item.trimmed_statement)
+        if minimal else item.assertion
+    )
+    lines = [_line(assertion) + (" [trimmed]" if minimal else "")]
     replaces = list(item.refs.get("replaces") or [])
     if item.withheld_replaces:
         n = len(item.withheld_replaces)
@@ -1391,15 +1449,27 @@ def _render_selected(item: Selected) -> list[str]:
     support = [r for r in (item.refs.get("support") or []) if r not in unlinked]
     if support:
         lines.append(f"    support: {', '.join(support)}")
-    for found in item.discovered:
+    shown = _shown_discoveries(item)
+    for found in shown:
         lines.append(_render_discovery(found))
+    omitted = len(item.discovered) - len(shown)
+    if omitted:
+        lines.append(
+            f'    +{omitted} more unlinked: palinode search "{item.assertion.ref}" --resolve full'
+        )
     if item.assertion.qualifiers:
         lines.append(f"    qualifiers: {', '.join(item.assertion.qualifiers)}")
     if item.reasons:
         lines.append(f"    why: {', '.join(item.reasons)}")
-    if item.assertion.revision:
+    if item.assertion.revision and not minimal:
         lines.append(f"    revision: {item.assertion.revision[:12]}")
     return lines
+
+
+def _shown_discoveries(item: Selected) -> tuple[Discovery, ...]:
+    limit = 0 if item.trimmed_statement is not None else RENDERED_DISCOVERIES
+    plain = [d for d in item.discovered if not d.contested][:limit]
+    return tuple(d for d in item.discovered if d.contested or d in plain)
 
 
 def _render_replaced(item: Replaced) -> list[str]:
@@ -1423,6 +1493,24 @@ def _render_conflict(group: ConflictGroup) -> list[str]:
 def _render_insufficient(item: Insufficient) -> list[str]:
     title = f" {item.title}" if item.title else ""
     return [f"- [{item.ref}]{title} — {', '.join(item.reasons)}"]
+
+
+def _budget_refused(retrieval: dict[str, Any] | None) -> bool:
+    """Did packing refuse every matching unit for budget?
+
+    ``retrieval.selection`` is present only on an empty query bundle. Its
+    packing reasons mean a record answered and did not fit, not that nothing
+    answered. Clients test the same three reasons before treating an empty
+    bundle as isolation-only news.
+    """
+    reasons = ((retrieval or {}).get("selection") or {}).get("reasons") or ()
+    return bool({BUDGET_CHARS, BUDGET_TOKENS, BUDGET_ITEMS} & set(reasons))
+
+
+def _retrieval_line(retrieval: dict[str, Any] | None) -> str:
+    from palinode.core.scoring import describe_diagnostics
+
+    return describe_diagnostics(retrieval) if retrieval else ""
 
 
 def render_bundle(bundle: Bundle) -> str:
@@ -1459,7 +1547,12 @@ def render_bundle(bundle: Bundle) -> str:
             out.extend(_render_insufficient(item))
     if not (bundle.selected or bundle.conflicts or bundle.replaced or bundle.insufficient):
         out.append("")
-        out.append("Nothing in memory answers this.")
+        # A budget refusal is not an absence: records answer, none fit. Same
+        # length as the absence line, which packing does not charge.
+        out.append(
+            "Matches did not fit the budget." if _budget_refused(bundle.retrieval)
+            else "Nothing in memory answers this."
+        )
 
     withheld_line = describe_other_projects_withheld(
         bundle.other_projects_withheld,
@@ -1485,6 +1578,8 @@ def render_bundle(bundle: Bundle) -> str:
     out.append(
         f"Coverage: {status}" + (f" ({', '.join(reasons)})" if reasons else "")
     )
+    if bundle.retrieval:
+        out.append(bundle.retrieval_text or _retrieval_line(bundle.retrieval))
     if bundle.receipt_ref:
         out.append(f"Receipt: {bundle.receipt_ref}")
     return "\n".join(out)
@@ -1537,7 +1632,10 @@ def _delivered(packed: _Packed) -> list[tuple[str, str, str]]:
             add(ref, EVIDENCE_ONLY, "superseded_by")
         for alt in item.alternatives:
             add(alt.get("ref"), CONFLICT_SIDE, "alternative")
+        hidden = {d.ref for d in item.discovered} - {d.ref for d in _shown_discoveries(item)}
         for ref in item.refs.get("support") or ():
+            if ref in hidden:
+                continue
             add(ref, EVIDENCE_ONLY, "support")
     return out
 
@@ -1613,8 +1711,25 @@ def build_bundle(
     # request only says whether other projects' records are wanted.
     if request.include_other_projects:
         chain = with_other_projects(chain)
-    rows, seed_reasons, other_withheld = _collect_seeds(request, chain)
+    rows, seed_reasons, other_withheld, query_rows = _collect_seeds(request, chain)
     reasons |= seed_reasons
+
+    retrieval = None
+    if request.query:
+        from palinode.core.confidence import assess
+        from palinode.core.retrieval import search_diagnostics
+
+        active_mode = (
+            "lexical" if config.search.retrieval_mode == "lexical"
+            else "keyword-fallback" if DEGRADED_KEYWORD_ONLY in seed_reasons
+            else "hybrid" if config.search.hybrid_enabled else "vector"
+        )
+        # Confidence describes visible query seeds, never context refs or
+        # unlinked evidence found while resolving their currency.
+        retrieval = search_diagnostics(
+            active_mode, matched=bool(query_rows), chain=chain,
+            confidence=assess(query_rows, active_mode=active_mode),
+        )
 
     evidence = resolve_evidence(
         rows, mode="full", budget=evidence_budget, chain=chain, now=now
@@ -1639,6 +1754,15 @@ def build_bundle(
     selected, replaced, conflicts, insufficient, withheld = _assemble(
         evidence.seeds, resolutions, views, revisions, shown_retired=shown_retired,
     )
+    discovery_query = request.query or ""
+    if request.prompt and discovery_query:
+        from palinode.core.prompt_query import shape_prompt
+        discovery_query = shape_prompt(discovery_query)
+    terms = set(re.findall(r"\w+", discovery_query.lower())) - store.FTS_STOPWORDS
+    selected = [replace(item, discovered=tuple(sorted(
+        item.discovered,
+        key=lambda d: -len(terms & set(re.findall(r"\w+", f"{d.ref} {d.statement}".lower()))),
+    ))) for item in selected]
 
     # What the receipt needs about each record, taken from the layers that
     # already computed it: live frontmatter (for lineage), the whole-file hash
@@ -1670,14 +1794,52 @@ def build_bundle(
         for side in group.sides:
             currencies[side.ref or ""] = side.currency
 
+    frame_chars = _frame_chars(
+        request.query, request.ref, contested=bool(conflicts),
+        withheld_line=other_withheld > 0,
+    )
+    retrieval_text = _retrieval_line(retrieval)
+    retrieval_compact = False
+    if retrieval and frame_chars + len(retrieval_text) + 1 > request.budget.max_chars:
+        # At tiny budgets keep the verdict in text; full arm evidence remains
+        # in the structured bundle and receipt rather than overrunning the cap.
+        retrieval_compact = True
+        retrieval_text = (
+            f"Match confidence: {retrieval['confidence']}; "
+            "no current selection (retired records withheld)."
+        )
+
     packed = _apply_budget(
         selected, replaced, conflicts, insufficient, request.budget,
-        frame_chars=_frame_chars(
-            request.query, request.ref, contested=bool(conflicts),
-            withheld_line=other_withheld > 0,
-        ),
+        frame_chars=frame_chars + (len(retrieval_text) + 1 if retrieval_text else 0),
     )
     reasons |= packed.reasons
+
+    if retrieval and not (
+        packed.selected or packed.conflicts or packed.replaced
+        or packed.insufficient or packed.omitted_conflicts
+    ):
+        # The verdict remains about query seeds. Explain the selection rather
+        # than disguising a lifecycle/policy/budget refusal as no retrieval.
+        selection_reasons = set(packed.reasons)
+        if withheld:
+            selection_reasons.add("retired_withheld")
+        if conflicts:
+            selection_reasons.add("contested")
+        if insufficient:
+            selection_reasons.update(r for item in insufficient for r in item.reasons)
+        if not selection_reasons:
+            selection_reasons.update(seed_reasons or {"no_query_seeds"})
+        retrieval["selection"] = {"selected": 0, "reasons": sorted(selection_reasons)}
+        # Shorter than the full arm diagnostic already charged to the budget;
+        # detailed reasons and arm scores stay in the structured response.
+        why = (
+            "budget exhausted" if packed.reasons
+            else "retired records withheld" if withheld else "no eligible records"
+        )
+        retrieval_text = f"Match confidence: {retrieval['confidence']}; no current selection ({why})."
+    elif retrieval and retrieval_compact:
+        retrieval_text = f"Match confidence: {retrieval['confidence']}"
 
     mentioned: list[str] = []
     for item in packed.selected:
@@ -1713,6 +1875,7 @@ def build_bundle(
             # History changes what is selected, so it is part of the query
             # scope; unset (not False) by default keeps the default's key.
             "include_retired": request.include_retired or None,
+            "prompt": request.prompt or None,
         },
         scope=chain.as_list() if chain is not None else (),
         resolve_mode="full",
@@ -1735,7 +1898,9 @@ def build_bundle(
         coverage=coverage,
         source_revisions=source_revisions,
         receipt_ref=receipt.bundle_id,
-        receipt=receipt.public(),
+        receipt={**receipt.public(), **({"retrieval": retrieval} if retrieval else {})},
+        retrieval=retrieval,
+        retrieval_text=retrieval_text,
         omitted_conflicts=len(packed.omitted_conflicts),
         omitted_conflict_refs=tuple(
             tuple(group.refs) for group in packed.omitted_conflicts
@@ -1763,6 +1928,7 @@ __all__ = [
     "DEFAULT_MAX_CHARS",
     "DEFAULT_MAX_ITEMS",
     "DEGRADED_KEYWORD_ONLY",
+    "DEMOTED",
     "DISCOVERY_EXCERPT_CHARS",
     "MAX_SEEDS",
     "Assertion",

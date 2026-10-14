@@ -56,6 +56,7 @@ class ResolveRequest(BaseModel):
     known-at questions are deliberately not offered yet.
     """
 
+    prompt: bool = False
     query: str | None = None
     ref: str | None = None
     context: list[str] | None = None
@@ -95,6 +96,7 @@ def resolve_api(req: ResolveRequest, request: Request = None) -> dict[str, Any]:
     try:
         bundle_request = BundleRequest(
             query=req.query,
+            prompt=req.prompt,
             ref=req.ref,
             context=tuple(req.context or ()),
             intent=req.intent or "current_state",

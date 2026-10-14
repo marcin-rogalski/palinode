@@ -19,7 +19,7 @@ import os
 import struct
 import hashlib
 from contextlib import contextmanager
-from typing import Any, Callable, Collection, Iterator, Sequence
+from typing import Any, Callable, Collection, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from palinode.core.config import config
 from palinode.core import aliases
@@ -1345,8 +1345,45 @@ def fts_match_expression(query: str) -> str:
 _BM25_IDF_FLOOR = 1e-6
 
 
-def bm25_query_scale(
+def _fts_doc_count(db: sqlite3.Connection, table: str) -> float:
+    """N as FTS5's ``bm25()`` sees it: the rows of *table*'s index."""
+    # The only interpolated value is the table name, an identifier chosen by
+    # the caller in code and checked here — never a query string.
+    if not table.isidentifier():
+        raise ValueError(f"not an FTS5 table name: {table!r}")
+    try:
+        return float(
+            db.execute(f"SELECT count(*) FROM {table}_docsize").fetchone()[0]  # nosec B608
+        )
+    except sqlite3.Error:
+        # No docsize shadow table (``columnsize=0``): the index's own row count
+        # is the same N bm25() uses.
+        return float(db.execute(f"SELECT count(*) FROM {table}").fetchone()[0])  # nosec B608
+
+
+def fts_unit_counts(
     db: sqlite3.Connection, units: Sequence[str], *, table: str = "chunks_fts"
+) -> dict[str, int]:
+    """How many documents of *table* hold each unit (its ``df``). One query per
+    distinct unit; shared by the scale and the chance figure below."""
+    if not table.isidentifier():
+        raise ValueError(f"not an FTS5 table name: {table!r}")
+    counts: dict[str, int] = {}
+    for unit in dict.fromkeys(units):
+        row = db.execute(
+            f"SELECT count(*) FROM {table} WHERE {table} MATCH ?",  # nosec B608
+            (unit,),
+        ).fetchone()
+        counts[unit] = int(row[0] if row else 0)
+    return counts
+
+
+def bm25_query_scale(
+    db: sqlite3.Connection,
+    units: Sequence[str],
+    *,
+    table: str = "chunks_fts",
+    counts: Mapping[str, int] | None = None,
 ) -> float:
     """What this query's best possible BM25 score is, in this index.
 
@@ -1371,7 +1408,10 @@ def bm25_query_scale(
       would then be *easy* to cover completely, and the questions with no
       answer in the store are exactly the ones carrying unknown words.
       Measured on the packaged relevance fixture, that variant put five of the
-      fourteen no-answer questions at a perfect 1.0.
+      fourteen no-answer questions at a perfect 1.0. Measured again with the
+      co-occurrence rule in :mod:`palinode.core.confidence` in place, it still
+      made four of them ``confident``: the vector arm's corroboration rule
+      depends on an unknown word pulling this score down.
     * **A unit with nothing rare about it is kept at FTS5's own floor**, not
       dropped. A term in half the store or more has ``IDF <= 0``, which
       ``bm25()`` clamps to ``_BM25_IDF_FLOOR``; carrying the same clamp here
@@ -1385,40 +1425,104 @@ def bm25_query_scale(
     ``db`` is an open connection; ``units`` are :func:`fts_match_units`'
     phrases; ``table`` is the FTS5 index to price them against, which is the
     chunk index for every product caller (``bench.trigger_phrasing`` scores the
-    same arm over an index of trigger descriptions). Returns ``0.0`` when there
-    is nothing to price — no units, or an empty index — which
-    :func:`search_fts` reads as "no keyword evidence". Costs one ``count(*)``
-    per unit, on top of the search itself.
+    same arm over an index of trigger descriptions). ``counts`` are the units'
+    document frequencies when the caller already has them
+    (:func:`fts_unit_counts`). Returns ``0.0`` when there is nothing to price
+    — no units, or an empty index — which :func:`search_fts` reads as "no
+    keyword evidence". Costs one ``count(*)`` per distinct unit unless
+    ``counts`` is given, on top of the search itself.
     """
     if not units:
         return 0.0
-    # The only interpolated value below is the table name, and it is an
-    # identifier chosen by the caller in code, never a query string — the units
-    # themselves are bound. Rejecting anything that is not a bare identifier
-    # keeps it that way.
-    if not table.isidentifier():
-        raise ValueError(f"not an FTS5 table name: {table!r}")
-    try:
-        n_docs = float(
-            db.execute(f"SELECT count(*) FROM {table}_docsize").fetchone()[0]  # nosec B608
-        )
-    except sqlite3.Error:
-        # No docsize shadow table (``columnsize=0``): the index's own row count
-        # is the same N bm25() uses.
-        n_docs = float(db.execute(f"SELECT count(*) FROM {table}").fetchone()[0])  # nosec B608
+    n_docs = _fts_doc_count(db, table)
     if n_docs <= 0.0:
         return 0.0
+    if counts is None:
+        counts = fts_unit_counts(db, units, table=table)
     total = 0.0
     for unit in units:
-        row = db.execute(
-            f"SELECT count(*) FROM {table} WHERE {table} MATCH ?",  # nosec B608
-            (unit,),
-        ).fetchone()
         # An absent unit is priced at the rarest a present one can be.
-        df = max(int(row[0] if row else 0), 1)
+        df = max(counts.get(unit, 0), 1)
         idf = math.log((n_docs - df + 0.5) / (df + 0.5))
         total += idf if idf > 0.0 else _BM25_IDF_FLOOR
     return total
+
+
+def keyword_chance(
+    db: sqlite3.Connection,
+    units: Sequence[str],
+    rowids: Sequence[int],
+    *,
+    table: str = "chunks_fts",
+    counts: Mapping[str, int] | None = None,
+) -> dict[int, float | None]:
+    """How many documents of this index chance alone would give each row's
+    combination of the query's terms.
+
+    A row holding units ``u1 … uk`` of the query gets ``N × Π df(ui) / N``:
+    the expected number of documents that would hold all of them together if
+    terms fell into documents independently. Below 1.0 the row's combination
+    is rarer than chance — the terms are together because the row is about
+    them. At 1.0 or more it is what any index of this size and vocabulary hands
+    to such a query: a single term (its own ``df``, always at least 1), or a
+    pair of everyday terms in a store that uses both everywhere ("commit" and
+    "push" across a store of session notes).
+
+    It reads what normalized BM25 cannot. That score is coverage of the query's
+    IDF, so one rare term repeated in a chunk can carry a short query past the
+    keyword arm's confident mark on its own, and the IDF it prices is relative
+    to this store: in a large store of one project's work notes, the ordinary
+    vocabulary of operations requests is rare enough per term to look
+    specific, while appearing in hundreds of chunks. The figure counts those
+    chunks rather than weighing their terms. Independence makes it generous:
+    words that travel together (a project's own jargon) co-occur more often
+    than the product predicts, so a combination below 1.0 here can still be
+    ordinary, never the reverse.
+
+    Returns ``{rowid: figure}`` for every row in *rowids*. The figure is
+    ``None`` — no judgement — in two cases. For a query with fewer than two
+    units, because co-occurrence needs two terms and a lone identifier is a
+    different question. And for a row whose every matched unit is in half the
+    index or more, where FTS5 prices each at its IDF floor and the score is a
+    count of the query's terms rather than a weight of evidence: that is the
+    regime of a store of a handful of records, all about one subject, where
+    every combination is "chance" and the figure cannot tell an on-topic row
+    from an incidental one. One extra query per distinct unit, restricted to
+    the candidate rows, on top of the counts the scale already takes.
+    """
+    distinct = list(dict.fromkeys(units))
+    ids = list(dict.fromkeys(int(r) for r in rowids))
+    if not ids:
+        return {}
+    if len(distinct) < 2:
+        return dict.fromkeys(ids, None)
+    if not table.isidentifier():
+        raise ValueError(f"not an FTS5 table name: {table!r}")
+    n_docs = _fts_doc_count(db, table)
+    if counts is None:
+        counts = fts_unit_counts(db, distinct, table=table)
+    figures: dict[int, float] = dict.fromkeys(ids, n_docs)
+    if n_docs <= 0.0:
+        return dict(figures)
+    discriminating: set[int] = set()
+    marks = ",".join("?" * len(ids))
+    for unit in distinct:
+        share = counts.get(unit, 0) / n_docs
+        if share <= 0.0:
+            continue
+        for (rowid,) in db.execute(
+            f"SELECT rowid FROM {table} WHERE {table} MATCH ? "  # nosec B608
+            f"AND rowid IN ({marks})",
+            (unit, *ids),
+        ):
+            figures[rowid] *= share
+            # FTS5's IDF is positive below half the index (see _BM25_IDF_FLOOR).
+            if share < 0.5:
+                discriminating.add(rowid)
+    return {
+        rowid: (figure if rowid in discriminating else None)
+        for rowid, figure in figures.items()
+    }
 
 
 def search_fts(query: str, category: str | None = None, top_k: int = 10,
@@ -1453,8 +1557,8 @@ def search_fts(query: str, category: str | None = None, top_k: int = 10,
         safe_query = " OR ".join(units) or '""'
 
         sql = """
-            SELECT c.id, c.file_path, c.section_id, c.content, c.category, c.metadata,
-                   c.content_hash, c.importance, c.last_recalled,
+            SELECT c.rowid AS fts_rowid, c.id, c.file_path, c.section_id, c.content,
+                   c.category, c.metadata, c.content_hash, c.importance, c.last_recalled,
                    rank AS bm25_score
             FROM chunks_fts fts
             JOIN chunks c ON c.rowid = fts.rowid
@@ -1474,7 +1578,14 @@ def search_fts(query: str, category: str | None = None, top_k: int = 10,
         # Priced against the same index the rows came from, and only when
         # there are rows to price: the per-unit counts are the one cost this
         # normalization adds, and an empty result set has nothing to normalize.
-        scale = bm25_query_scale(db, units) if rows else 0.0
+        # The same counts give each row its chance figure (keyword_chance),
+        # which the keyword arm's verdict reads beside the score.
+        counts = fts_unit_counts(db, units) if rows else {}
+        scale = bm25_query_scale(db, units, counts=counts) if rows else 0.0
+        chance = (
+            keyword_chance(db, units, [row["fts_rowid"] for row in rows], counts=counts)
+            if rows else {}
+        )
     finally:
         db.close()
 
@@ -1505,6 +1616,7 @@ def search_fts(query: str, category: str | None = None, top_k: int = 10,
             "importance": row["importance"],
             "last_recalled": row["last_recalled"],
             "score": normalized,
+            "keyword_chance": chance.get(row["fts_rowid"]),
         })
 
     return results

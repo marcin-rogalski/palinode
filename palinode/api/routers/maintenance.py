@@ -483,7 +483,8 @@ def migrate_openclaw_api(req: MigrateOpenClawRequest) -> dict:
              and optional ``dry_run`` flag.
 
     Returns:
-        dict with sections_found, files_created, files_skipped, log_file, dry_run.
+        dict with sections_found, files_created, files_skipped, files_renamed,
+        log_file, dry_run.
     """
     from palinode.migration.openclaw import run_migration
 

@@ -40,7 +40,7 @@ _NIGHTLY = (
     "palinode.consolidation.cron --nightly --days {days} >> /var/log/c.log 2>&1"
 )
 _WEEKLY = (
-    "0 11 * * 0 root cd /opt/palinode && venv/bin/python -m "
+    "0 12 * * 0 root cd /opt/palinode && venv/bin/python -m "
     "palinode.consolidation.cron --days {days} >> /var/log/c.log 2>&1"
 )
 
@@ -106,7 +106,7 @@ class TestParsing:
 
         assert entry is not None
         assert entry.mode == "weekly"
-        assert entry.schedule == "0 11 * * 0"
+        assert entry.schedule == "0 12 * * 0"
 
     def test_a_user_crontab_line_has_no_user_column_and_still_parses(self) -> None:
         line = "17 * * * * python -m palinode.consolidation.cron --nightly --days 2"
@@ -158,8 +158,19 @@ def test_cron_matching_config_passes_and_still_prints_the_effective_value(cron: 
     assert "effective catch-up bound 7 day(s)" in result.message
     assert "effective lookback 7 day(s)" in result.message
     assert "0 11 * * *" in result.message
-    assert "0 11 * * 0" in result.message
+    assert "0 12 * * 0" in result.message
     assert result.remediation is None
+
+
+def test_same_minute_nightly_and_weekly_cron_entries_warn(cron: Path) -> None:
+    _write(cron, _NIGHTLY.format(days=7), _WEEKLY.format(days=7).replace("0 12", "0 11"))
+
+    result = consolidation_schedule_effective(_ctx(nightly=7, weekly=7))
+
+    assert result.passed is False
+    assert result.severity == "warn"
+    assert "nightly and weekly run at the same minute" in result.message
+    assert "consolidation lock" in result.message
 
 
 def test_a_cron_line_with_no_days_hands_the_decision_back_to_the_config(cron: Path) -> None:
@@ -167,7 +178,7 @@ def test_a_cron_line_with_no_days_hands_the_decision_back_to_the_config(cron: Pa
     _write(
         cron,
         "0 11 * * * root python -m palinode.consolidation.cron --nightly",
-        "0 11 * * 0 root python -m palinode.consolidation.cron",
+        "0 12 * * 0 root python -m palinode.consolidation.cron",
     )
 
     result = consolidation_schedule_effective(_ctx(nightly=7, weekly=7))

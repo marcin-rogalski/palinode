@@ -17,6 +17,8 @@ frontmatter-only by design).
 """
 from __future__ import annotations
 
+import itertools
+import os
 from typing import Any
 
 import pytest
@@ -43,10 +45,18 @@ def _budget(monkeypatch, *, chars: int = 0, tokens: int = 0) -> None:
     monkeypatch.setattr(config.context, "injection_max_tokens", tokens)
 
 
+_STAMPS = itertools.count(1_700_000_000, 60)
+
+
 def _seed(memory_dir, rel: str, meta: dict[str, Any], body: str = "body") -> None:
     path = memory_dir / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"---\n{yaml.safe_dump(meta)}---\n\n{body}\n", encoding="utf-8")
+    # Explicit, strictly increasing mtimes in seed order. On fast hardware
+    # several writes land in one timestamp tick, and "most recent first" must
+    # not depend on how quickly the fixture ran.
+    stamp = next(_STAMPS)
+    os.utime(path, (stamp, stamp))
 
 
 @pytest.fixture

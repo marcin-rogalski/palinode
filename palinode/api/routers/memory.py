@@ -200,10 +200,11 @@ class SaveRequest(BaseModel):
     #: save to an *existing* ``(category, slug)`` is written. ``append`` adds to
     #: the document — the existing body is kept verbatim and this content lands
     #: under a dated append heading beneath it. ``replace`` overwrites the body
-    #: in place and marks the memory a living/current-state document
+    #: in place, keeps record frontmatter except old-body metadata, and marks
+    #: the memory a living/current-state document
     #: (consolidation must never SUPERSEDE/ARCHIVE-into-history it). Omitting
-    #: the field overwrites without marking anything, which is what every save
-    #: that never declared a policy has always done — the implicit
+    #: the field replaces the body with the same frontmatter rule, without
+    #: marking anything — the implicit
     #: ``DEFAULT_UPDATE_POLICY`` does not append; only an explicit or
     #: file-inherited ``append`` does. Persisted as sticky frontmatter so the
     #: file declares its own regime. Validated against

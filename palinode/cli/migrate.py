@@ -43,6 +43,7 @@ def _print_migration_result(result: dict, dry_run: bool, source_name: str) -> No
     console.print(f"  Sections found:  {result['sections_found']}")
     console.print(f"  Files created:   {len(result['files_created'])}")
     console.print(f"  Files skipped:   {len(result['files_skipped'])} (duplicate content)")
+    console.print(f"  Files renamed:   {len(result['files_renamed'])} (path collision)")
 
     if result["files_created"]:
         console.print("\n[green]Created:[/green]")
@@ -53,6 +54,11 @@ def _print_migration_result(result: dict, dry_run: bool, source_name: str) -> No
         console.print("\n[dim]Skipped (identical content already exists):[/dim]")
         for fp in result["files_skipped"]:
             console.print(f"  {fp}")
+
+    if result["files_renamed"]:
+        console.print("\n[yellow]Renamed (path collision):[/yellow]")
+        for rename in result["files_renamed"]:
+            console.print(f"  {rename['from']} → {rename['to']}")
 
     if result.get("log_file"):
         console.print(f"\n[dim]Migration log:[/dim] {result['log_file']}")

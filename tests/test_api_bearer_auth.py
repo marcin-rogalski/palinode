@@ -48,6 +48,9 @@ def _import_app_in_subprocess(env_overrides: dict[str, str]):
     env = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+        # The conftest's sandbox. Without it the fresh interpreter resolves
+        # ``~/palinode`` and logs its startup warning into the real store.
+        "PALINODE_DIR": os.environ["PALINODE_DIR"],
         **env_overrides,
     }
     for k in _GATE_ENV_VARS:
@@ -60,6 +63,27 @@ def _import_app_in_subprocess(env_overrides: dict[str, str]):
         text=True,
         timeout=60,
     )
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _leave_a_tokenless_server_behind():
+    """Re-import the server without auth env once this module is done.
+
+    ``_reload_server`` reloads the shared module in place, so the last test here
+    leaves ``palinode.api.server.app`` wrapped in bearer auth with that test's
+    token. Every later test on the same worker that does
+    ``from palinode.api.server import app`` then gets 401s, which made modules
+    such as ``test_correction_review.py`` fail only when collected after this
+    one. Module-scoped, so it runs after each test's ``monkeypatch`` has
+    already restored the environment.
+    """
+    yield
+    with pytest.MonkeyPatch.context() as mp:
+        for key in _GATE_ENV_VARS:
+            mp.delenv(key, raising=False)
+        import palinode.api.server as server_mod  # noqa: PLC0415
+
+        importlib.reload(server_mod)
 
 
 def _reload_server(monkeypatch: pytest.MonkeyPatch, **env: str | None):

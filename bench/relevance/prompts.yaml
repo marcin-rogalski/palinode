@@ -1,0 +1,582 @@
+# Synthetic prompt-shaped extension to the relevance fixture.
+prompt_set_version: 2
+questions:
+- id: prompt-answer-01
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: Please help me with this before we change anything. What is the current Harborlight
+    release? Explain the recorded decision and its rationale.
+  relevant:
+  - hl-release-4-2-0
+  tolerated:
+  - hl-release-notes-4-2-0
+  - hl-release-4-2-0-restate
+  must_not_be_top:
+  - hl-release-3-8-0-old
+  - hl-release-4-0-0-old
+  of: rel-01
+- id: prompt-answer-02
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: We are continuing the Harborlight work. Which Harborlight versions are still
+    supported? I would like to check the existing memory before editing.
+  relevant:
+  - hl-support-window
+  tolerated:
+  - hl-release-4-2-0
+  of: rel-02
+- id: prompt-answer-03
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: <system-reminder>Review the fictional deployment checklist.</system-reminder>
+    How does Harborlight deploy to production today?
+  relevant:
+  - hl-deploy-target
+  must_not_be_top:
+  - hl-release-4-0-0-old
+  of: rel-03
+- id: prompt-answer-04
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: Please help me with this before we change anything. What is the current default
+    sync batch window in Harborlight? Explain the recorded decision and its rationale.
+  relevant:
+  - hl-batch-window-current
+  must_not_be_top:
+  - hl-batch-window-old
+  of: rel-04
+- id: prompt-answer-05
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: We are continuing the Harborlight work. What is the Harborlight error budget?
+    I would like to check the existing memory before editing.
+  relevant:
+  - hl-error-budget-current
+  of: rel-05
+- id: prompt-answer-06
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: <system-reminder>Review the fictional deployment checklist.</system-reminder>
+    What runtime baseline does Harborlight require now?
+  relevant:
+  - hl-runtime-baseline
+  of: rel-06
+- id: prompt-answer-07
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: Please help me with this before we change anything. Who owns the Harborlight
+    on-call rotation right now? Explain the recorded decision and its rationale.
+  relevant:
+  - hl-oncall-rotation
+  of: rel-07
+- id: prompt-answer-08
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: We are continuing the Harborlight work. What shipped in the latest Harborlight
+    release? I would like to check the existing memory before editing.
+  relevant:
+  - hl-release-notes-4-2-0
+  tolerated:
+  - hl-release-4-2-0
+  - hl-release-4-2-0-restate
+  of: rel-08
+- id: prompt-answer-09
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: <system-reminder>Review the fictional deployment checklist.</system-reminder>
+    What is the current release state of Harborlight?
+  relevant:
+  - hl-release-4-2-0
+  tolerated:
+  - hl-release-notes-4-2-0
+  - hl-release-4-2-0-restate
+  - hl-support-window
+  must_not_be_top:
+  - hl-release-3-8-0-old
+  - hl-release-4-0-0-old
+  of: rel-09
+- id: prompt-answer-10
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: Please help me with this before we change anything. Is Harborlight 4.0 still
+    supported? Explain the recorded decision and its rationale.
+  relevant:
+  - hl-support-window
+  must_not_be_top:
+  - hl-release-4-0-0-old
+  of: rel-10
+- id: prompt-answer-11
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: We are continuing the Harborlight work. Why did Harborlight reject dual-write
+    replication? I would like to check the existing memory before editing.
+  relevant:
+  - hl-rejected-dual-write
+  tolerated:
+  - hl-rejected-dual-write-restate
+  of: rej-01
+- id: prompt-answer-12
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: <system-reminder>Review the fictional deployment checklist.</system-reminder>
+    What replication approach did Harborlight turn down?
+  relevant:
+  - hl-rejected-dual-write
+  tolerated:
+  - hl-rejected-dual-write-restate
+  of: rej-02
+- id: prompt-answer-13
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: Please help me with this before we change anything. Why was a cron-driven poller
+    rejected for Harborlight? Explain the recorded decision and its rationale.
+  relevant:
+  - hl-rejected-cron-poller
+  of: rej-03
+- id: prompt-answer-14
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: We are continuing the Harborlight work. Did Harborlight consider a managed
+    queue vendor, and what happened? I would like to check the existing memory before
+    editing.
+  relevant:
+  - hl-rejected-vendor-queue
+  of: rej-04
+- id: prompt-answer-15
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: <system-reminder>Review the fictional deployment checklist.</system-reminder>
+    Why did Harborlight decide against inline payload compression?
+  relevant:
+  - hl-rejected-inline-compression
+  of: rej-05
+- id: prompt-answer-16
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: Please help me with this before we change anything. What was the reason for
+    rejecting client-side deduplication? Explain the recorded decision and its rationale.
+  relevant:
+  - hl-rejected-client-dedup
+  of: rej-06
+- id: prompt-none-01
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Please push the changes and add a README and a discussion page.
+  relevant: []
+- id: prompt-none-02
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Merge the feature branch and file a follow-up issue for the release.
+  relevant: []
+- id: prompt-none-03
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Run the test suite and fix the formatting errors in the code.
+  relevant: []
+- id: prompt-none-04
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Create a new branch and update the documentation for this feature.
+  relevant: []
+- id: prompt-none-05
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Thanks for your help today, that was a useful conversation.
+  relevant: []
+- id: prompt-none-06
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Good morning! I hope you are having a pleasant day.
+  relevant: []
+- id: prompt-none-07
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Continue with the previous step and let me know when it is done.
+  relevant: []
+- id: prompt-none-08
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Could you tell me the capital city of the fictional kingdom of Zoravia?
+  relevant: []
+- id: prompt-none-09
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: How do you bake a chocolate souffle in a solar oven?
+  relevant: []
+- id: prompt-none-10
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: What are the migration habits of purple marsh dragons?
+  relevant: []
+- id: prompt-none-11
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Who won the 2025 lunar croquet championship?
+  relevant: []
+- id: prompt-none-12
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: What is the ticket price for the underwater museum of music?
+  relevant: []
+- id: prompt-none-13
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: <local-command-caveat>These commands are local output.</local-command-caveat><command-name>/clear</command-name>
+  relevant: []
+- id: prompt-none-14
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: <bash-input>git status --short</bash-input>
+  relevant: []
+- id: prompt-none-15
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: <task-notification><task-id>fictional-17</task-id><summary>Deployment tests
+    completed.</summary></task-notification>
+  relevant: []
+- id: prompt-none-16
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: <system-reminder>Harborlight release rollback batch window.</system-reminder>Thank
+    you, all done.
+  relevant: []
+- id: prompt-none-17
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: <pasted_content type="log">Harborlight supports release batch window.</pasted_content>Format
+    this pasted log as a table.
+  relevant: []
+- id: prompt-none-18
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: <command-name>/review</command-name><command-args>release</command-args>
+  relevant: []
+- id: prompt-none-19
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: Go ahead and ship the patch after the tests finish.
+  relevant: []
+- id: prompt-none-20
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: xq zzv plorth wibble frobnicate
+  relevant: []
+- id: prompt-answer-17
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: Implement the Harborlight sync batch window using the recorded current batch-window
+    decision.
+  relevant:
+  - hl-batch-window-current
+- id: prompt-answer-18
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: Update the storage code using the prior Harborlight decision rejecting dual-write.
+    Explain why it was rejected.
+  relevant:
+  - hl-rejected-dual-write
+  - hl-rejected-dual-write-restate
+- id: prompt-answer-19
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: Remind me why Harborlight rejected the cron poller before I work on the scheduler.
+  relevant:
+  - hl-rejected-cron-poller
+- id: prompt-answer-20
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: Explain the recorded Harborlight runtime baseline before I edit the environment
+    configuration.
+  relevant:
+  - hl-runtime-baseline
+- id: prompt-answer-21
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: Add dual-write replication to the Harborlight sync path so every write lands
+    in both stores.
+  relevant:
+  - hl-rejected-dual-write
+  tolerated:
+  - hl-rejected-dual-write-restate
+- id: prompt-answer-22
+  cls: changed_decision
+  variant: prompt
+  project: harborlight
+  ask: Update the Harborlight sync batch window in the service config.
+  relevant:
+  - hl-batch-window-current
+  must_not_be_top:
+  - hl-batch-window-old
+- id: prompt-answer-23
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: Implement a cron poller for Harborlight sync retries.
+  relevant:
+  - hl-rejected-cron-poller
+- id: prompt-answer-24
+  cls: changed_decision
+  variant: prompt
+  project: harborlight
+  ask: Fix the Harborlight access token lifetime in the auth service settings.
+  relevant:
+  - hl-auth-ttl-new
+  must_not_be_top:
+  - hl-auth-ttl-old
+# ── prompt set v2: short imperative ops and coding prompts ──────────────
+# Operations requests a coding agent receives mid-session. Their verbs and
+# nouns ("delete", "plan", "merge", "parallel", "test", "branch") are
+# incidental: the store holds them in planning and onboarding notes, never as
+# the answer. Several are paraphrases of live misses where a rare incidental
+# term cleared the keyword mark with no vector corroboration.
+- id: prompt-none-21
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: merge 9417 and file the recall hook issue, examine all these for possible
+    issues to dive deep into, like why per prompt recall is so bad
+  relevant: []
+- id: prompt-none-22
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: 'lets make a plan to work on these:'
+  relevant: []
+- id: prompt-none-23
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: drop it, run both in parallel with opus
+  relevant: []
+- id: prompt-none-24
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: delete the fallback file
+  relevant: []
+- id: prompt-none-25
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: add bash permission rule
+  relevant: []
+- id: prompt-none-26
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: merge 9502 and 9503
+  relevant: []
+- id: prompt-none-27
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: kill the orphan, apply runsvc.sh to all three
+  relevant: []
+- id: prompt-none-28
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: rerun the flaky test and paste the output
+  relevant: []
+- id: prompt-none-29
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: rebase onto main and resolve the conflicts
+  relevant: []
+- id: prompt-none-30
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: write the release notes for this
+  relevant: []
+- id: prompt-none-31
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: check the logs on the staging box
+  relevant: []
+- id: prompt-none-32
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: delete the old branches and prune the remote
+  relevant: []
+- id: prompt-none-33
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: commit this and push
+  relevant: []
+- id: prompt-none-34
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: revert the last commit, it broke the dashboard
+  relevant: []
+- id: prompt-none-35
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: add a test for the empty input case
+  relevant: []
+- id: prompt-none-36
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: close the stale issues and update the labels
+  relevant: []
+- id: prompt-none-37
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: spin up two agents and have them review each other's diffs
+  relevant: []
+- id: prompt-none-38
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: open a PR for this branch and request review from the owner
+  relevant: []
+- id: prompt-none-39
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: bump the version and tag it
+  relevant: []
+- id: prompt-none-40
+  cls: no_answer
+  variant: prompt
+  project: harborlight
+  ask: ok now do the same for the other two files
+  relevant: []
+# Short coding requests the store does answer, mostly without naming the
+# project: the turn where a recorded decision matters and the prompt carries
+# only the subject.
+- id: prompt-answer-25
+  cls: changed_decision
+  variant: prompt
+  project: harborlight
+  ask: change the sync history retention to 30 days
+  relevant:
+  - hl-retention-new
+  tolerated:
+  - hl-retention-proposal
+  must_not_be_top:
+  - hl-retention-old
+- id: prompt-answer-26
+  cls: changed_decision
+  variant: prompt
+  project: harborlight
+  ask: set the access token lifetime back to 24 hours
+  relevant:
+  - hl-auth-ttl-new
+  tolerated:
+  - hl-auth-incident-note
+  must_not_be_top:
+  - hl-auth-ttl-old
+- id: prompt-answer-27
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: move the work queue to a managed queue vendor
+  relevant:
+  - hl-rejected-vendor-queue
+- id: prompt-answer-28
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: compress the payloads inline before they go over the wire
+  relevant:
+  - hl-rejected-inline-compression
+- id: prompt-answer-29
+  cls: rejected_approach
+  variant: prompt
+  project: harborlight
+  ask: add client-side deduplication to the sync client
+  relevant:
+  - hl-rejected-client-dedup
+- id: prompt-answer-30
+  cls: changed_decision
+  variant: prompt
+  project: harborlight
+  ask: write the migration for production to the next schema version
+  relevant:
+  - hl-schema-v3-new
+  tolerated:
+  - hl-schema-staging-rollback
+  must_not_be_top:
+  - hl-schema-v2-old
+- id: prompt-answer-31
+  cls: changed_decision
+  variant: prompt
+  project: harborlight
+  ask: collapse the deployment back to a single region
+  relevant:
+  - hl-region-two-new
+  tolerated:
+  - hl-region-cost-memo
+  must_not_be_top:
+  - hl-region-single-old
+- id: prompt-answer-32
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: page the on-call owner about the sync failure
+  relevant:
+  - hl-oncall-rotation
+- id: prompt-answer-33
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: raise the error budget alert threshold
+  relevant:
+  - hl-error-budget-current
+- id: prompt-answer-34
+  cls: release_state
+  variant: prompt
+  project: harborlight
+  ask: pin the runtime to Python 3.11 in the CI image
+  relevant:
+  - hl-runtime-baseline

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# palinode-hook-version: 0.23.0
 # palinode-user-prompt-submit.sh — per-turn implicit recall.
 #
 # Fires on every UserPromptSubmit, BEFORE the model sees the prompt. Two
@@ -17,13 +18,20 @@
 #      replaced or contradicted by a record nobody checked. Deliberately
 #      conservative defaults: this runs every prompt, and injected bytes live
 #      in the conversation for the rest of the session.
+#      A confident bundle whose only news is other-project withholding is
+#      delivered once per session_id, then suppressed. Content-bearing bundles
+#      retain the withheld line every time; explicit recall is unchanged.
+#      One marker per session lives in ${XDG_CACHE_HOME:-~/.cache}/palinode/
+#      isolation-notices; invalid/missing IDs or cache failures keep delivery
+#      enabled. Markers older than about seven days are pruned opportunistically.
 #
 # Routing — three ways memory reaches a session, and they stay separate:
 #
 #   session start  ordinary priming (palinode-session-start.sh): the core
 #                  digest, under that hook's own timeout. No resolution — a
 #                  startup digest is orientation, not an answer.
-#   per turn       this hook: bounded resolution under a 250 ms deadline
+#   per turn       this hook: bounded resolution under a 250 ms loopback /
+#                  1000 ms remote deadline
 #                  (PALINODE_HOOK_RESOLVE_DEADLINE), falling back to plain
 #                  search with an explicit marker.
 #   explicit       palinode_resolve / palinode_search / palinode_read as MCP
@@ -53,7 +61,10 @@
 #   PALINODE_HOOK_RESOLVE              1/0 — bounded resolution on/off (default 1;
 #                                      0 = the pre-resolution search channel, no marker)
 #   PALINODE_HOOK_RESOLVE_DEADLINE     per-turn resolution deadline in MILLISECONDS
-#                                      (default 250). A latency budget spent on every
+#                                      (default 250 loopback, 1000 remote). Remote
+#                                      resolve measured 260–340 ms; 1000 ms leaves
+#                                      margin for the network round trip.
+#                                      A latency budget spent on every
 #                                      prompt, not a failure timeout — past it the turn
 #                                      falls back to search rather than waiting.
 #   PALINODE_PROJECT                   this session's project slug (optional). Sent
@@ -87,7 +98,20 @@ TRIGGERS_ON="${PALINODE_HOOK_RECALL_TRIGGERS:-1}"
 MIN_CHARS="${PALINODE_HOOK_RECALL_MIN_CHARS:-12}"
 MAX_CHARS="${PALINODE_HOOK_RECALL_MAX_CHARS:-3000}"
 RESOLVE_ON="${PALINODE_HOOK_RESOLVE:-1}"
-RESOLVE_DEADLINE_MS="${PALINODE_HOOK_RESOLVE_DEADLINE:-250}"
+API_AUTHORITY="${PALINODE_API#*://}"
+API_AUTHORITY="${API_AUTHORITY%%/*}"
+API_AUTHORITY="${API_AUTHORITY##*@}"
+API_AUTHORITY="$(printf '%s' "$API_AUTHORITY" | tr '[:upper:]' '[:lower:]')"
+RESOLVE_DEFAULT_MS=1000
+case "$API_AUTHORITY" in
+  localhost|localhost:*|\[::1\]|\[::1\]:*) RESOLVE_DEFAULT_MS=250 ;;
+  *)
+    API_HOST="${API_AUTHORITY%%:*}"
+    if [[ "$API_HOST" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+      RESOLVE_DEFAULT_MS=250
+    fi ;;
+esac
+RESOLVE_DEADLINE_MS="${PALINODE_HOOK_RESOLVE_DEADLINE:-$RESOLVE_DEFAULT_MS}"
 # Per-fired-trigger content cap and max fired triggers injected per prompt.
 TRIGGER_READ_CHARS=1200
 TRIGGER_MAX_FIRED=2
@@ -175,6 +199,33 @@ trim_to_boundary() {
     end' 2>/dev/null
 }
 
+# Return success only when this session already received isolation-only news.
+# Cache trouble leaves the existing delivery behaviour intact. Mark only at
+# the output boundary, after trimming and the final controls check.
+ISOLATION_MARKER=""
+isolation_notice_seen() {
+  local session_id cache marker seen
+  session_id=$(echo "$INPUT" | jq -r '
+    .session_id | if type == "string" then
+      select(length > 0 and (test("[^A-Za-z0-9_-]") | not))
+    else empty end' 2>/dev/null) || return 1
+  [ -n "$session_id" ] || return 1
+  cache="${XDG_CACHE_HOME:-${HOME:-}/.cache}/palinode/isolation-notices"
+  [ -n "${XDG_CACHE_HOME:-${HOME:-}}" ] || return 1
+  mkdir -p "$cache" 2>/dev/null || return 1
+  [ -r "$cache" ] && [ -w "$cache" ] && [ -x "$cache" ] || return 1
+  find "$cache" -type f -name '*.seen' -mtime +7 -exec rm -f {} + 2>/dev/null || :
+  marker="$cache/$session_id.seen"
+  [ ! -L "$marker" ] || return 1
+  if [ -e "$marker" ]; then
+    [ -f "$marker" ] && [ -r "$marker" ] && [ -w "$marker" ] || return 1
+    IFS= read -r seen 2>/dev/null < "$marker" || return 1
+    [ "$seen" != "delivered" ] || return 0
+  fi
+  ISOLATION_MARKER="$marker"
+  return 1
+}
+
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 # A linked git worktree (an agent's .claude/worktrees/<task>) is named after
@@ -232,7 +283,7 @@ if [ "${PALINODE_HOOK_DRYRUN:-0}" = "1" ]; then
   exit 0
 fi
 
-QUERY_PAYLOAD=$(jq -n --arg q "$PROMPT" '{query: $q}')
+QUERY_PAYLOAD=$(jq -n --arg q "$PROMPT" --argjson scope "$CLIENT_SCOPE" '{query: $q} + $scope')
 
 SECTIONS=""
 
@@ -253,6 +304,8 @@ if [ "$TRIGGERS_ON" = "1" ]; then
       BODY=$(curl -s -f -G \
         ${AUTH[@]+"${AUTH[@]}"} \
         --data-urlencode "file_path=$f" \
+        --data-urlencode "project=$CLIENT_RESOLVED_PROJECT" \
+        --data-urlencode "automatic=true" \
         "${PALINODE_API}/read" \
         --connect-timeout 1 \
         --max-time "${HOOK_TIMEOUT}" 2>/dev/null \
@@ -277,7 +330,8 @@ search_section() {
   SEARCH_PAYLOAD=$(jq -n --arg q "$PROMPT" \
     --argjson limit "$MAX_RESULTS" --argjson thr "$THRESHOLD" \
     --arg project "$CLIENT_RESOLVED_PROJECT" \
-    '{query: $q, limit: $limit, threshold: $thr, max_chars: 300}
+    '{query: $q, prompt: true, receipt: true, automatic: true, mode: "passive",
+       limit: $limit, threshold: $thr, max_chars: 300}
      + (if $project != "" then {context: ["project/" + $project]} else {} end)')
   HITS=$(curl -s -f \
     -X POST "${PALINODE_API}/search" \
@@ -288,10 +342,11 @@ search_section() {
     --max-time "${HOOK_TIMEOUT}" 2>/dev/null) || HITS=""
 
   if [ -n "$HITS" ]; then
-    # The API returns a bare array; `{results: [...]}` is accepted for
-    # forward-compat. The type check must come FIRST: `.results` on an array
-    # is a hard jq ERROR (not null), so `.results // .` dies on the real
-    # response shape and fail-open turns the crash into permanent silence.
+    # Automatic delivery requires positive evidence, including on the fallback.
+    # Older servers without a verdict are silent until upgraded.
+    [ "$(echo "$HITS" | jq -r 'if type == "object" then .receipt.retrieval.confidence // empty else empty end' 2>/dev/null)" = "confident" ] || return 0
+    # The receipt-capable response carries rows under results. Keep the type
+    # check first: looking up .results on a bare array is a jq error.
     LINES=$(echo "$HITS" | jq -r '
       def fmt2: (. * 100 | round) as $c
         | (($c / 100) | floor | tostring) + "." + ((($c % 100) + 100 | tostring)[1:]);
@@ -332,7 +387,7 @@ if [ "$MAX_RESULTS" -gt 0 ] \
   if [ "$RESOLVE_ON" = "1" ]; then
     RESOLVE_PAYLOAD=$(jq -n --arg q "$PROMPT" --argjson scope "$CLIENT_SCOPE" \
       --argjson items "$MAX_RESULTS" --argjson chars "$RESOLVE_BUDGET" \
-      '{query: $q} + $scope + {max_items: $items, max_chars: $chars}')
+      '{query: $q, prompt: true} + $scope + {max_items: $items, max_chars: $chars}')
     # curl takes seconds; the knob is milliseconds, like the plugin's.
     DEADLINE=$(jq -n --argjson ms "$RESOLVE_DEADLINE_MS" '$ms / 1000')
     BUNDLE=$(curl -s -f \
@@ -346,14 +401,29 @@ if [ "$MAX_RESULTS" -gt 0 ] \
       RESOLVE_OK=1
       # An omitted conflict counts: budget pressure dropped a contested group
       # from the body, and the bundle names it by ref precisely so silence
-      # cannot make it look settled.
+      # cannot make it look settled. The withheld count alone is news only
+      # when nothing here answered: an empty selection the budget refused
+      # had answers that did not fit, and stays silent.
       RESOLVED=$(echo "$BUNDLE" | jq -r '
         if type != "object" then empty
+        elif (.retrieval.confidence // .receipt.retrieval.confidence // "") != "confident" then empty
         elif (((.selected // []) | length) + ((.conflicts // []) | length)
               + ((.replaced // []) | length) + ((.insufficient // []) | length)
               + (.omitted_conflicts // 0)
-              + (.other_projects_withheld // 0)) > 0 then (.text // empty)
+              + (if ((.retrieval // .receipt.retrieval // {}).selection.reasons // [])
+                    | any(. == "budget_exhausted:chars" or . == "budget_exhausted:tokens"
+                          or . == "budget_exhausted:items")
+                 then 0 else (.other_projects_withheld // 0) end)) > 0 then (.text // empty)
         else empty end' 2>/dev/null) || RESOLVED=""
+      if [ -n "$RESOLVED" ] && echo "$BUNDLE" | jq -e '
+        (((.selected // []) | length) + ((.conflicts // []) | length)
+          + ((.replaced // []) | length) + ((.insufficient // []) | length)
+          + (.omitted_conflicts // 0)) == 0
+        and (.other_projects_withheld // 0) > 0' >/dev/null 2>&1; then
+        if isolation_notice_seen; then
+          RESOLVED=""
+        fi
+      fi
     fi
   fi
 
@@ -414,7 +484,11 @@ FINAL_CONTROL=$(curl -sS -f \
   --max-time "${HOOK_TIMEOUT}" 2>/dev/null) || exit 0
 [ "$(echo "$FINAL_CONTROL" | jq -r 'if .allowed == true then "yes" else "no" end' 2>/dev/null)" = "yes" ] || exit 0
 
-jq -n --arg ctx "$CONTEXT" \
-  '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}'
+OUTPUT=$(jq -n --arg ctx "$CONTEXT" \
+  '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}') || exit 0
+if [ -n "$ISOLATION_MARKER" ] && [[ "$CONTEXT" == *"$RESOLVED"* ]]; then
+  { printf 'delivered\n' > "$ISOLATION_MARKER"; } 2>/dev/null || :
+fi
+printf '%s\n' "$OUTPUT"
 
 exit 0

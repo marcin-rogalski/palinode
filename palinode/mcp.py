@@ -1439,8 +1439,8 @@ def _all_tools() -> list[types.Tool]:
                         # client cap that silently drops an over-budget tool
                         # (see tests/test_mcp_schema_size_budget.py).
                         "description": (
-                            "Re-save to same slug: 'append' keeps the existing body and adds "
-                            "below it; 'replace' overwrites and marks a living doc. Sticky."
+                            "Same slug: 'append' adds to body; 'replace' replaces body, "
+                            "keeps non-body metadata, marks a living doc. Sticky."
                         ),
                     },
                     "sources": {
@@ -2533,6 +2533,7 @@ def _all_tools() -> list[types.Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "prompt": {"type": "boolean", "description": "Shape a raw user prompt for recall."},
                     "query": {
                         "type": "string",
                         "description": "Natural-language question. Give this or `ref`.",
@@ -3669,6 +3670,8 @@ async def _tool_resolve(arguments: dict[str, Any]) -> list[types.TextContent]:
         body["project"] = scope.project
     if str(arguments.get("include_other_projects", False)).lower() in ("true", "1"):
         body["include_other_projects"] = True
+    if str(arguments.get("prompt", False)).lower() in ("true", "1"):
+        body["prompt"] = True
     resp = await _post("/resolve", json=body, timeout=60.0)
     if resp.status_code != 200:
         return _text(f"Resolve failed: {resp.text}")

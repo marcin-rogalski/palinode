@@ -135,8 +135,18 @@ export function configFromEnv(
       ? env.PALINODE_HOOK_RECALL_PROFILE
       : "coding";
   const profile = PROFILES[profileName];
+  const apiUrl = overrides.apiUrl ?? env.PALINODE_API_URL ?? "http://localhost:6340";
+  let resolveDefaultMs = 1000;
+  try {
+    const host = new URL(apiUrl).hostname;
+    if (host === "localhost" || host === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(host)) {
+      resolveDefaultMs = 250;
+    }
+  } catch {
+    // An unusable URL follows the remote default and the client's fail-open path.
+  }
   const fromEnv: PalinodeConfig = {
-    apiUrl: env.PALINODE_API_URL ?? "http://localhost:6340",
+    apiUrl,
     token: env.PALINODE_API_TOKEN || undefined,
     recallProfile: profileName,
     maxResults: num(env, "PALINODE_HOOK_RECALL_MAX_RESULTS", profile.maxResults),
@@ -155,7 +165,8 @@ export function configFromEnv(
       env.PALINODE_HOOK_RESOLVE === undefined || env.PALINODE_HOOK_RESOLVE === ""
         ? true
         : env.PALINODE_HOOK_RESOLVE !== "0",
-    resolveDeadlineMs: num(env, "PALINODE_HOOK_RESOLVE_DEADLINE", 250),
+    // Remote resolve measured 260–340 ms: leave round-trip margin.
+    resolveDeadlineMs: num(env, "PALINODE_HOOK_RESOLVE_DEADLINE", resolveDefaultMs),
     coreMaxFiles: num(env, "PALINODE_HOOK_INJECT_MAX_FILES", profile.coreMaxFiles),
     coreMaxChars: num(env, "PALINODE_HOOK_INJECT_MAX_CHARS", 4000),
     minMessages: num(env, "PALINODE_HOOK_MIN_MESSAGES", 3),
@@ -291,6 +302,13 @@ interface FiredTrigger {
 
 /** The qualified bundle `POST /resolve` returns. Fields this adapter reads. */
 export interface ResolveBundle {
+  retrieval?: {
+    confidence?: string;
+    arms?: Record<string, unknown>;
+    /** Present on an empty query bundle: why nothing was selected. */
+    selection?: { selected?: number; reasons?: string[] };
+  };
+  receipt?: { retrieval?: { confidence?: string } };
   /** The rendered bundle — one deterministic template, shared by every surface. */
   text?: string;
   selected?: unknown[];
@@ -446,6 +464,7 @@ export async function resolveBundle(
   const bundle = (await apiJson(cfg, fetchFn, "/resolve", {
     body: {
       query: prompt,
+      prompt: true,
       // The client's directory: the server may be on another machine and
       // resolves the project from this, never from its own directory.
       ...(cwd ? { cwd: clientCwd(cwd) } : {}),
@@ -470,13 +489,25 @@ function bundleIsEmpty(bundle: ResolveBundle): boolean {
       count(bundle.conflicts) +
       count(bundle.replaced) +
       count(bundle.insufficient) +
-      (typeof bundle.omitted_conflicts === "number" ? bundle.omitted_conflicts : 0) +
-      // A scoped bundle isolation left (nearly) empty carries a line saying
-      // other projects' records were withheld; that line is worth delivering.
-      (typeof bundle.other_projects_withheld === "number" ? bundle.other_projects_withheld : 0) ===
+      (typeof bundle.omitted_conflicts === "number" ? bundle.omitted_conflicts : 0) ===
     0
   );
 }
+
+/** Packing refused every matching unit for budget: records answered, none
+ *  fit. Not isolation news, so the withheld count alone is not delivered.
+ *  The same three reasons the server and the shell hook test. */
+const BUDGET_REFUSALS = new Set([
+  "budget_exhausted:chars", "budget_exhausted:tokens", "budget_exhausted:items",
+]);
+function budgetRefused(bundle: ResolveBundle): boolean {
+  const reasons = bundle.retrieval?.selection?.reasons;
+  return Array.isArray(reasons) && reasons.some((r) => BUDGET_REFUSALS.has(r));
+}
+
+// Bindings pass their harness session identifier. Without one, the process
+// lifetime is the session. This state affects only automatic delivery.
+const isolationNoticesSeen = new Set<string>();
 
 /**
  * Per-turn recall: prospective triggers + one memory channel.
@@ -488,7 +519,7 @@ function bundleIsEmpty(bundle: ResolveBundle): boolean {
  *     is orientation, not an answer, and its payload stays separate from this
  *     one.
  *   - **Per turn** (here) → bounded resolution (`POST /resolve`) under
- *     `resolveDeadlineMs` (250 ms). Past the deadline the turn falls back to
+ *     `resolveDeadlineMs` (250 ms loopback, 1000 ms remote). Past the deadline the turn falls back to
  *     today's strict-threshold search, prefixed with
  *     `RESOLUTION_DEADLINE_MARKER` — never silently.
  *   - **Explicit follow-up** → `palinode_search` / `palinode_read` /
@@ -498,6 +529,8 @@ function bundleIsEmpty(bundle: ResolveBundle): boolean {
  *
  * `cwd` is the client's working directory; it scopes the resolution to the
  * client's project on a server that may run elsewhere.
+ * `sessionId` keys the once-per-session isolation-only notice. Bundles with
+ * real content always retain their withheld line; explicit resolve is unchanged.
  *
  * Returns the context block to inject, or null when there is nothing to say.
  */
@@ -506,6 +539,7 @@ export async function buildRecallContext(
   cfg: PalinodeConfig,
   fetchFn: FetchFn = fetch,
   cwd?: string,
+  sessionId = "",
 ): Promise<string | null> {
   if (prompt.length < cfg.minChars) return null;
 
@@ -516,7 +550,7 @@ export async function buildRecallContext(
     if (!cfg.triggersOn) return "";
     const project = cwd ? await resolveClientProject(cfg, cwd, fetchFn) : null;
     const fired = await apiJson(cfg, fetchFn, "/check-triggers", {
-      body: { query: prompt },
+      body: { query: prompt, ...(cwd ? { cwd: clientCwd(cwd) } : {}), ...(project ? { project } : {}) },
     });
     if (!Array.isArray(fired)) return "";
     let out = "";
@@ -546,13 +580,18 @@ export async function buildRecallContext(
     const hits = (await apiJson(cfg, fetchFn, "/search", {
       body: {
         query: prompt,
+        prompt: true,
+        receipt: true,
+        automatic: true,
+        mode: "passive",
         limit: cfg.maxResults,
         threshold: cfg.threshold,
         max_chars: SNIPPET_MAX_CHARS,
         ...(project ? { context: [`project/${project}`] } : {}),
       },
-    })) as { results?: SearchHit[] } | SearchHit[] | null;
-    const results = Array.isArray(hits) ? hits : hits?.results;
+    })) as { results?: SearchHit[]; receipt?: { retrieval?: { confidence?: string } } } | null;
+    if (hits?.receipt?.retrieval?.confidence !== "confident") return "";
+    const results = hits?.results;
     if (!Array.isArray(results) || results.length === 0) return "";
     const lines = results
       .map((r) => {
@@ -576,7 +615,17 @@ export async function buildRecallContext(
     const room = cfg.maxChars - PREAMBLE.length;
     if (room < RESOLVE_MIN_CHARS) return "";
     const bundle = await resolveBundle(prompt, cfg, fetchFn, room, cwd);
-    if (bundle) return bundleIsEmpty(bundle) ? "" : `\n${bundle.text}\n`;
+    if (bundle) {
+      const verdict = bundle.retrieval?.confidence ?? bundle.receipt?.retrieval?.confidence;
+      if (verdict !== "confident") return "";
+      if (bundleIsEmpty(bundle)) {
+        if (!(typeof bundle.other_projects_withheld === "number" && bundle.other_projects_withheld > 0)
+            || budgetRefused(bundle)
+            || !bundle.text || isolationNoticesSeen.has(sessionId)) return "";
+        isolationNoticesSeen.add(sessionId);
+      }
+      return `\n${bundle.text}\n`;
+    }
     const fallback = await searchSection();
     unframed = Boolean(fallback);
     // Nothing recalled is nothing to mislead about: silence stays free, and

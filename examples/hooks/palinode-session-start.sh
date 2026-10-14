@@ -1,4 +1,5 @@
 #!/bin/bash
+# palinode-hook-version: 0.23.0
 # palinode-session-start.sh — warm + inject Palinode context on session start.
 #
 # Fires on Claude Code SessionStart (startup and /clear by default). Two

@@ -108,6 +108,39 @@ depends on the keyword arm clearing its weak mark, a store of a handful of
 records could not produce one however well it matched. That is the cost the
 rescale removes — an exact identifier hit reaches the confident mark on a
 three-record store now, so it can also vouch for the vector arm there.
+
+*Co-occurrence.* The keyword arm used to need no second opinion, and on short
+operations requests that was the gap. Its score is coverage of the query's IDF,
+so a chunk repeating one rare-ish term ("write" inside "dual-write") carries a
+three-word command past the confident mark by itself; and on a large store of
+one project's work notes even a chunk holding several terms proves little:
+"delete", "fallback" and "file" are each in hundreds of its chunks, so some
+chunk holds them together whatever the question was. Neither arm's best score
+separates such commands from real coding requests there — on a 12,800-chunk
+store of development notes, short commands and answerable requests alike
+scored 0.52–0.68 cosine and 0.45–1.7 keyword. So the keyword arm also has to
+show that the row's combination of query terms is rarer than chance in this
+index (:func:`palinode.core.store.keyword_chance`): the expected number of
+chunks that would hold those terms together if terms fell into chunks
+independently. At one or more, any index of this size and vocabulary has such
+a row, and the keyword arm does not vouch for it: the delivery reports
+``weak`` with ``co_occurrence: "chance"``. A single matched term is always at
+least one (its own document count), so one term can no longer make a
+multi-term query confident. Two kinds of row are not judged and keep the
+score's own verdict: one answering a one-term query, which has no
+co-occurrence to measure (the exact-identifier case), and one whose every
+matched term is in half the index or more, the few-records regime where the
+score counts terms rather than weighing them and every combination is chance.
+One is the mark because it is where chance stops supplying the row, not
+because a measurement put it there. On ``bench.relevance`` (real bge-m3) it
+changes exactly one verdict in every arm: the prompt-shaped false confident on
+"write the release notes for this". No question in the published set and no
+answerable prompt moves. The rule governs the keyword arm's own claim only.
+Its corroboration of the vector arm is unchanged: requiring the figure there
+too demoted a sixth of the published answerable questions in a simulation over
+the same rows, because on a small store most corroborating rows are ordinary
+combinations. A vector-led delivery on a large homogeneous store is therefore
+still reachable by an everyday command; that calibration is open.
 """
 from __future__ import annotations
 
@@ -131,6 +164,13 @@ VECTOR_WEAK = 0.50
 #: every query term once; see :func:`palinode.core.store.bm25_query_scale`).
 KEYWORD_CONFIDENT = 0.60
 KEYWORD_WEAK = 0.22
+
+#: The keyword arm vouches only for a row whose combination of query terms is
+#: rarer than chance in this index: fewer than this many documents would hold
+#: it by accident (:func:`palinode.core.store.keyword_chance`). One is where
+#: "the row is about these terms" starts to beat "any index this size has a
+#: row like this"; it is not fitted. See *Co-occurrence* in the module docstring.
+KEYWORD_CHANCE_BELOW = 1.0
 
 #: Which arm each delivered row reports its own score under.
 _ARM_KEYS: tuple[tuple[str, str, float, float], ...] = (
@@ -179,6 +219,25 @@ def _best(results: Sequence[Mapping[str, Any]], key: str) -> float | None:
     return max(values) if values else None
 
 
+def _keyword_vouches(results: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether some row at the keyword confident mark holds its query terms
+    together more rarely than chance would (see *Co-occurrence*).
+
+    A row without the figure (``None``: a one-term query, or a row from a
+    caller that does not compute it) is judged on its score alone, as before.
+    """
+    for row in results:
+        if not isinstance(row, Mapping):
+            continue
+        score = row.get("keyword_score")
+        if score is None or float(score) < KEYWORD_CONFIDENT:
+            continue
+        chance = row.get("keyword_chance")
+        if chance is None or float(chance) < KEYWORD_CHANCE_BELOW:
+            return True
+    return False
+
+
 def assess(
     results: Sequence[Mapping[str, Any]], *, active_mode: str
 ) -> dict[str, Any] | None:
@@ -195,15 +254,18 @@ def assess(
     reported with ``best: null`` rather than dropped, so a reader can tell
     "the arm said nothing" from "the arm was never asked".
 
-    **With one exception, and it is the measured one.** When both arms ran
-    (``hybrid``), the vector arm may not claim ``confident`` over a query the
-    keyword arm does not reach its own weak mark on; such a delivery is
-    reported ``weak`` and the block carries ``corroboration: "missing"``. See
-    the module docstring for why that is a rule about arms rather than a
-    higher cosine mark. The demotion is one-directional: the keyword arm
-    needed no corroboration in the measurement, and requiring it would make
-    ``confident`` unreachable in lexical mode, where there is no vector arm to
-    ask.
+    **With two exceptions, both measured.** When both arms ran (``hybrid``),
+    the vector arm may not claim ``confident`` over a query the keyword arm
+    does not reach its own weak mark on; such a delivery is reported ``weak``
+    and the block carries ``corroboration: "missing"``. See the module
+    docstring for why that is a rule about arms rather than a higher cosine
+    mark. The keyword arm is not asked for a second arm's word — that would
+    make ``confident`` unreachable in lexical mode, where there is no vector
+    arm to ask — but in every mode it may claim ``confident`` only on a row
+    whose combination of query terms is rarer than chance in this index; a
+    delivery whose confident keyword rows are all chance-level is reported
+    ``weak`` with ``co_occurrence: "chance"`` (*Co-occurrence*, above). As
+    with corroboration, the arm still reports its own verdict.
     """
     if active_mode not in RANKED_MODES:
         return None
@@ -219,6 +281,9 @@ def assess(
 
     vector, keyword = arms["vector"]["verdict"], arms["keyword"]["verdict"]
     block: dict[str, Any] = {}
+    chance_level = keyword == CONFIDENT and not _keyword_vouches(results)
+    if chance_level:
+        keyword = WEAK
     if (
         active_mode in CORROBORATING_MODES
         and vector == CONFIDENT
@@ -227,6 +292,10 @@ def assess(
         vector = WEAK
         block["corroboration"] = "missing"
     verdict = vector if _RANK[vector] >= _RANK[keyword] else keyword
+    if chance_level and verdict != CONFIDENT:
+        # Named only where it is why the delivery is below the arm's own
+        # verdict; a vector-led confident delivery needs no excuse.
+        block["co_occurrence"] = "chance"
     return {"confidence": verdict, "arms": arms, **block}
 
 
@@ -247,6 +316,7 @@ def delivered_verdict(receipt: Mapping[str, Any] | None) -> str | None:
 
 __all__ = [
     "CONFIDENT",
+    "KEYWORD_CHANCE_BELOW",
     "KEYWORD_CONFIDENT",
     "KEYWORD_WEAK",
     "NONE",

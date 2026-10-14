@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import os
+import re
 import textwrap
 from datetime import UTC
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
+from palinode.cli import main
 from palinode.migration.openclaw import (
     _detect_type,
     _slugify,
@@ -264,6 +267,93 @@ def test_deduplication_skips_identical_content(
     # Second run: all should be skipped, none created
     assert len(result2["files_created"]) == 0
     assert len(result2["files_skipped"]) == 4
+    assert result2["files_renamed"] == []
+
+
+def test_path_collision_preserves_existing_memory(
+    tmp_path: Path, fake_memory_dir: Path
+) -> None:
+    source = tmp_path / "MEMORY.md"
+    source.write_text("## Collision\nWe decided on the imported plan.\n", encoding="utf-8")
+    original = fake_memory_dir / "decisions" / "collision.md"
+    original.parent.mkdir()
+    original_bytes = (
+        b"---\ntitle: Existing decision\nassignee: Alice\nstatus: active\n"
+        b"---\n\n# Collision\n\nKeep this decision.\n"
+    )
+    original.write_bytes(original_bytes)
+
+    with patch("palinode.migration.openclaw.config") as mock_cfg:
+        mock_cfg.memory_dir = str(fake_memory_dir)
+        result = run_migration(str(source))
+
+    assert original.read_bytes() == original_bytes
+    assert result["files_skipped"] == []
+    assert len(result["files_renamed"]) == 1
+    rename = result["files_renamed"][0]
+    assert rename["from"] == "decisions/collision.md"
+    assert re.fullmatch(r"decisions/collision-openclaw-[0-9a-f]{8}\.md", rename["to"])
+    assert result["files_created"] == [rename["to"]]
+    assert "We decided on the imported plan." in (fake_memory_dir / rename["to"]).read_text()
+    log = (fake_memory_dir / result["log_file"]).read_text()
+    assert "Files renamed: 1" in log
+    assert f"`{rename['from']}` → `{rename['to']}`" in log
+
+
+def test_taken_renamed_path_gets_another_name(
+    tmp_path: Path, fake_memory_dir: Path
+) -> None:
+    from datetime import datetime as _real_datetime
+
+    fixed_now = _real_datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    class _FrozenDatetime(_real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    source = tmp_path / "MEMORY.md"
+    source.write_text("## Collision\nWe decided on the imported plan.\n", encoding="utf-8")
+    original = fake_memory_dir / "decisions" / "collision.md"
+    original.parent.mkdir()
+    original.write_bytes(b"Existing decision\n")
+
+    with patch("palinode.migration.openclaw.config") as mock_cfg, \
+         patch("palinode.migration.openclaw.datetime", _FrozenDatetime):
+        mock_cfg.memory_dir = str(fake_memory_dir)
+        preview = run_migration(str(source), dry_run=True)
+        first_rename = preview["files_renamed"][0]["to"]
+        taken = fake_memory_dir / first_rename
+        taken.write_bytes(b"Another existing memory\n")
+        result = run_migration(str(source))
+
+    assert original.read_bytes() == b"Existing decision\n"
+    assert taken.read_bytes() == b"Another existing memory\n"
+    assert result["files_renamed"] == [
+        {"from": "decisions/collision.md", "to": first_rename[:-3] + "-2.md"}
+    ]
+    assert result["files_created"] == [result["files_renamed"][0]["to"]]
+    assert (fake_memory_dir / result["files_created"][0]).exists()
+
+
+def test_cli_reports_path_collision_in_dry_run(
+    tmp_path: Path, fake_memory_dir: Path
+) -> None:
+    source = tmp_path / "MEMORY.md"
+    source.write_text("## Collision\nWe decided on the imported plan.\n", encoding="utf-8")
+    original = fake_memory_dir / "decisions" / "collision.md"
+    original.parent.mkdir()
+    original.write_bytes(b"Existing decision\n")
+
+    result = CliRunner().invoke(
+        main, ["migrate", "openclaw", str(source), "--dry-run", "--format", "text"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Files renamed:   1 (path collision)" in result.output
+    assert "decisions/collision.md → decisions/collision-openclaw-" in result.output
+    assert original.read_bytes() == b"Existing decision\n"
+    assert sorted(path.name for path in original.parent.iterdir()) == ["collision.md"]
 
 
 # ── Path validation ───────────────────────────────────────────────────────────
@@ -273,3 +363,40 @@ def test_rejects_null_byte_in_path() -> None:
 
     with pytest.raises(ValueError, match="Null bytes"):
         _validate_source_path("/some/path\x00evil")
+
+
+
+def test_rerun_skips_sections_already_migrated_without_a_frozen_clock(
+    memory_md_file: Path, fake_memory_dir: Path
+) -> None:
+    """The frontmatter carries a per-run `last_updated`; dedup must compare
+    bodies, or a real re-run (clock moving) renames every section into a copy."""
+    with patch("palinode.migration.openclaw.config") as mock_cfg:
+        mock_cfg.memory_dir = str(fake_memory_dir)
+        first = run_migration(str(memory_md_file), dry_run=False)
+        second = run_migration(str(memory_md_file), dry_run=False)
+
+    assert len(first["files_created"]) == 4
+    assert second["files_created"] == []
+    assert second["files_renamed"] == []
+    assert sorted(second["files_skipped"]) == sorted(first["files_created"])
+
+
+def test_renamed_file_gets_its_own_id(tmp_path: Path, fake_memory_dir: Path) -> None:
+    import frontmatter
+
+    original = fake_memory_dir / "decisions" / "collision.md"
+    original.parent.mkdir()
+    original.write_text("---\nid: decisions-collision\n---\n\nOriginal fact.\n", encoding="utf-8")
+    source = tmp_path / "MEMORY.md"
+    # Decision wording, so the section lands in decisions/ and collides.
+    source.write_text("## Collision\nWe decided on the imported plan.\n", encoding="utf-8")
+
+    with patch("palinode.migration.openclaw.config") as mock_cfg:
+        mock_cfg.memory_dir = str(fake_memory_dir)
+        result = run_migration(str(source))
+
+    (rename,) = result["files_renamed"]
+    meta = frontmatter.load(fake_memory_dir / rename["to"]).metadata
+    assert meta["id"] == rename["to"][:-3].replace("/", "-", 1)
+    assert meta["id"] != "decisions-collision"

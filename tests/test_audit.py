@@ -64,10 +64,22 @@ class TestSanitizeArguments:
 
 
 class TestAuditLogger:
-    def test_creates_directory(self, audit_dir):
+    def test_creates_directory_on_first_write_not_construction(self, audit_dir):
+        # Constructed at ``palinode.mcp`` import: building it must not touch disk.
         cfg = AuditConfig(enabled=True, log_path=".audit/mcp-calls.jsonl")
         _logger = AuditLogger(str(audit_dir), cfg)
+        assert not (audit_dir / ".audit").exists()
+        _logger.log_call("palinode_status", {}, 1.0, "success")
         assert (audit_dir / ".audit").is_dir()
+
+    def test_uncreatable_directory_disables_logger_at_first_write(self, audit_dir):
+        blocker = audit_dir / "not-a-dir"
+        blocker.write_text("", encoding="utf-8")
+        cfg = AuditConfig(enabled=True, log_path=str(blocker / "mcp-calls.jsonl"))
+        _logger = AuditLogger(str(audit_dir), cfg)
+        _logger.log_call("palinode_status", {}, 1.0, "success")  # must not raise
+        assert _logger.enabled is False
+        assert _logger.log_path is None
 
     def test_log_creates_file(self, audit_logger):
         audit_logger.log_call("palinode_search", {"query": "test"}, 42.5, "success")

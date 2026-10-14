@@ -31,3 +31,5 @@ from palinode.diagnostics.checks import duplicate_fact_ids  # noqa: F401
 from palinode.diagnostics.checks import consolidation_schedule  # noqa: F401
 from palinode.diagnostics.checks import consolidation_last_run  # noqa: F401
 from palinode.diagnostics.checks import project_tags  # noqa: F401
+from palinode.diagnostics.checks import session_fallback  # noqa: F401
+from palinode.diagnostics.checks import hooks_current  # noqa: F401

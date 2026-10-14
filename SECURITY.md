@@ -58,6 +58,13 @@ guarantee, the gaps still open, and what to do about it as a user.
   source revision it came from and the evidence behind the match, and a
   delivery can be re-inspected afterward (`palinode explain`). That is a
   paper trail, not an authority check — see below.
+- **Imported handoff records carry no authority.** `palinode handoff import`
+  reads only the fields an export sends, so a bundle can't make a record core,
+  change how it may be updated, or widen who sees it. Imports never overwrite
+  or edit existing records, and every imported record is marked
+  `source: handoff-import`. Its text passes the same security scan as a save
+  and is delivered under the same notice and withholding as any memory. See
+  [docs/HANDOFF.md](docs/HANDOFF.md#what-an-import-cant-do).
 - **Project isolation is the default.** A request scoped to one project
   leaves out records tagged to a different project unless you ask to cross
   that boundary explicitly, and the response says how many it left out. This

@@ -31,7 +31,8 @@ invocation into the same policy, which is what a hand-rolled scheduler wants.
 
 The same state file also keeps a short **outcome history** per mode
 (:func:`record_outcome`), written for every real pass whether it succeeded,
-came back ``partial`` or raised. The gate's clock is stamped only on success,
+came back ``partial`` or raised; cron also records attempts refused by the run
+lock. The gate's clock is stamped only on success,
 so on its own it cannot say *that a pass failed* — and a nightly that failed
 at the token cap was found by someone reading the cron log by hand.
 ``palinode doctor`` reads the history to report the last outcome and the
@@ -358,7 +359,8 @@ def record_outcome(
     ``partial`` and a pass that raised are exactly the records the history
     exists to hold. ``status`` is the runner's own summary status (``success``,
     ``partial``, ``no_new_notes``, ``no notes found``) or ``error`` when the
-    pass raised, with ``error`` naming the exception. The history is trimmed
+    pass raised, with ``error`` naming the exception. Cron also writes
+    ``lock_refused`` for a scheduled attempt that did not start. The history is trimmed
     to :data:`RUN_HISTORY_LIMIT` newest-last, and lives under its own ``runs``
     key because ``record_run`` replaces ``modes[mode]`` wholesale.
 

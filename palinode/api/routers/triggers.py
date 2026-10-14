@@ -10,6 +10,7 @@ from palinode.api.path_safety import _open_memory_file_text, _resolve_memory_pat
 from palinode.core import embedder, expiry, parser, store
 from palinode.core.lifecycle import eligibility
 from palinode.core.visibility import is_visible
+from palinode.core.scope import ScopeChain
 
 router = APIRouter()
 
@@ -28,10 +29,13 @@ class TriggerRequest(BaseModel):
 
 class CheckTriggersRequest(BaseModel):
     query: str
+    cwd: str | None = None
+    project: str | None = None
+    session_id: str | None = None
     cooldown_bypass: bool | None = False
 
 
-def _trigger_target_deliverable(memory_file: str) -> bool:
+def _trigger_target_deliverable(memory_file: str, chain: ScopeChain | None = None) -> bool:
     """Require a safe, readable, *current* target with discovery permission.
 
     Two gates, both read from the target's live frontmatter:
@@ -64,7 +68,7 @@ def _trigger_target_deliverable(memory_file: str) -> bool:
             continue
         except (HTTPException, OSError, ValueError):
             return False
-        if not is_visible(None, resolved, metadata=metadata):
+        if not is_visible(chain, resolved, metadata=metadata):
             return False
         return not eligibility(metadata, path=resolved).retired
     return False
@@ -119,7 +123,12 @@ def delete_trigger_api(trigger_id: str) -> dict[str, str]:
 
 @router.post("/check-triggers")
 def check_triggers_api(req: CheckTriggersRequest) -> list[dict[str, Any]]:
-    """Check context against prospective triggers."""
+    """Check context against prospective triggers in the client's scope."""
+    from palinode.core.context_prime import resolve_context
+    from palinode.api.routers.search import _resolve_scope_chain
+
+    scope = resolve_context(cwd=req.cwd, project=req.project)
+    chain = _resolve_scope_chain(context=scope.context, session_id=req.session_id)
     try:
         emb = embedder.embed(req.query)
         if not emb:
@@ -132,7 +141,7 @@ def check_triggers_api(req: CheckTriggersRequest) -> list[dict[str, Any]]:
         return store.check_triggers(
             query_embedding=emb,
             cooldown_bypass=req.cooldown_bypass or False,
-            deliverable=_trigger_target_deliverable,
+            deliverable=lambda target: _trigger_target_deliverable(target, chain),
         )
     except embedder.EmbeddingInputError:
         raise  # typed 422 via the app-level handler in server.py

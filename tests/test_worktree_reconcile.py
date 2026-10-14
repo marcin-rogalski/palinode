@@ -37,6 +37,28 @@ DEAD_PID = 999_999  # not a live process (os.kill → ProcessLookupError)
 
 
 @pytest.fixture()
+def live_pid():
+    """PID of a live helper process that the lock-reason regex can parse.
+
+    ``os.getpid()`` is not enough: in a container pytest can run as PID 1–9,
+    and ``_PID_RE`` deliberately ignores single-digit numbers, so the lock
+    would read as "no PID" instead of "alive". PIDs are allocated upward, so
+    spawning until one reaches two digits ends within a few processes.
+    """
+    procs = []
+    try:
+        while not procs or procs[-1].pid < 10:
+            procs.append(subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"]
+            ))
+        yield procs[-1].pid
+    finally:
+        for p in procs:
+            p.kill()
+            p.wait()
+
+
+@pytest.fixture()
 def repo(tmp_path):
     """A git repo with a bare `origin` and a first commit on `main`."""
     origin = tmp_path / "origin.git"
@@ -195,8 +217,8 @@ def test_dead_clean_upstream_is_removed(repo):
     assert verdicts[dead].pid_alive is False and verdicts[dead].clean and verdicts[dead].has_upstream
 
 
-def test_alive_lock_is_skipped(repo):
-    alive = _add_worktree(repo, "alive", "feat/alive", lock_pid=os.getpid())
+def test_alive_lock_is_skipped(repo, live_pid):
+    alive = _add_worktree(repo, "alive", "feat/alive", lock_pid=live_pid)
     v = {x.path: x for x in reconcile(str(repo))}[alive]
     assert v.action == "skip" and "alive" in v.reason
 
@@ -218,9 +240,9 @@ def test_no_upstream_is_skipped(repo):
 # ---------------------------------------------------------------------------
 
 
-def test_apply_removes_only_dead_clean_upstream(repo):
+def test_apply_removes_only_dead_clean_upstream(repo, live_pid):
     dead = _add_worktree(repo, "dead", "feat/dead", lock_pid=DEAD_PID)
-    alive = _add_worktree(repo, "alive", "feat/alive", lock_pid=os.getpid())
+    alive = _add_worktree(repo, "alive", "feat/alive", lock_pid=live_pid)
     verdicts = reconcile(str(repo))
     removed = _apply(str(repo), verdicts)
 

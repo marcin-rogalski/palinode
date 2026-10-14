@@ -109,6 +109,7 @@ def _fetch_visible(
     *,
     record_recall: Callable[[list[str]], None] | None = None,
     other_projects: set[str] | None = None,
+    automatic: bool = False,
 ) -> list[dict[str, Any]]:
     """Fetch rows and apply the ADR-009 Layer 2 visibility gate.
 
@@ -145,7 +146,14 @@ def _fetch_visible(
     def gate(fetched: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if other_projects is not None:
             other_projects.clear()
-        return filter_visible(chain, fetched, other_projects=other_projects)
+        visible = filter_visible(chain, fetched, other_projects=other_projects)
+        if automatic:
+            # Live lifecycle classification, including archive location and
+            # frontmatter-only retirement behind an unchanged index body.
+            visible = [r for r in store.check_freshness(visible)
+                       if r.get("currency") != "retired"
+                       and r.get("currency_reason") not in {"source missing", "source unreadable"}]
+        return visible
 
     rows = run(base_limit)
     visible = gate(rows)
@@ -165,6 +173,7 @@ def _fetch_visible(
 
 
 class SearchRequest(BaseModel):
+    prompt: bool = False
     query: str
     category: Literal[*CATEGORIES] | None = None
     limit: int | None = Field(
@@ -271,7 +280,7 @@ def _attach_evidence(results: list[dict[str, Any]], req: "SearchRequest", chain)
 
         evidence = attach_evidence(results, mode=req.resolve, chain=chain)
         attach_resolution(results, evidence)
-        if not req.include_retired:
+        if not req.include_retired or req.automatic or req.mode == "passive":
             from palinode.core.evidence import withhold_retired
 
             withhold_retired(results, evidence)
@@ -488,6 +497,18 @@ def search_api(
         # identity → access control only (private/restricted still withheld).
         scope_chain = _resolve_search_scope_chain(req)
 
+        if req.prompt:
+            from palinode.core.prompt_query import shape_prompt
+
+            req.query = shape_prompt(req.query)
+            if not req.query:
+                active_mode = "lexical" if config.search.retrieval_mode == "lexical" else "hybrid"
+                return _delivery(
+                    [], req, _build_receipt([], req, scope_chain),
+                    active_mode=active_mode, chain=scope_chain, scope=scope,
+                    confidence=_assess_confidence([], active_mode),
+                )
+
         # empty query → recency-only mode. Skip embedding, query chunks
         # directly ordered by created_at desc, apply types/date_after filter.
         if not req.query.strip():
@@ -505,6 +526,7 @@ def search_api(
                 ),
                 recent_limit,
                 other_projects=recent_other,
+                automatic=req.automatic or req.mode == "passive",
             )
             # apply type_deny post-fetch (list_recent does allow-filter
             # types, but has no deny param — mirror the same pattern as below).
@@ -641,6 +663,7 @@ def search_api(
                 ids, mode=recall_mode, session_id=req.session_id
             ),
             other_projects=other_withheld,
+            automatic=req.automatic or req.mode == "passive",
         )
 
         # Apply type filters post-fetch, then trim to caller's limit.

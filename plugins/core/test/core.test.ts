@@ -15,6 +15,7 @@ import {
   configFromEnv,
   postSessionCapture,
   PROFILES,
+  resolveBundle,
   restoreMemory,
   unretractMentions,
   userEntries,
@@ -50,13 +51,17 @@ const ORIGIN = { cwd: process.cwd(), project: "myproj", source: "pi-extension", 
 const PROMPT = "how did we decide to handle the deploy rollback for the api?";
 
 /** Route-matching fetch stub. Records calls; unrouted paths 404. */
-function stubFetch(routes: Record<string, unknown>, calls: Array<{ url: string; body?: unknown }> = []): FetchFn {
+function stubFetch(routes: Record<string, unknown>, calls: Array<{ url: string; body?: unknown }> = [], legacySearch = false): FetchFn {
   return (async (url: unknown, init?: { body?: unknown }) => {
     const u = String(url);
     calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     const hit = Object.entries(routes).find(([path]) => u.includes(path));
     if (!hit) return new Response("not found", { status: 404 });
-    return new Response(JSON.stringify(hit[1]), { status: 200 });
+    const value = hit[1] as { receipt?: unknown };
+    const payload = hit[0] === "/search" && !legacySearch && !value?.receipt
+      ? { ...(Array.isArray(value) ? { results: value } : value),
+          receipt: { retrieval: { confidence: "confident" } } } : value;
+    return new Response(JSON.stringify(payload), { status: 200 });
   }) as FetchFn;
 }
 
@@ -234,13 +239,26 @@ describe("auth", () => {
 describe("bounded resolution (the per-turn consuming hook)", () => {
   const RCFG: PalinodeConfig = { ...CFG, resolveOn: true };
 
-  /** The three scenarios exactly as the Python suite pins them. */
+  /** The shared scenarios exactly as the Python suite pins them. */
   const BUNDLES = JSON.parse(
     readFileSync(
       new URL("../../../tests/fixtures/resolve_bundles.json", import.meta.url),
       "utf-8",
     ),
   ) as Record<string, Record<string, unknown>>;
+
+  it.each(["bounded", "minimal"])("delivers the %s assertion and evidence pointer intact", async (name) => {
+    const bundle = BUNDLES[name];
+    const ctx = await buildRecallContext(
+      PROMPT, RCFG, stubFetch({ "/check-triggers": [], "/resolve": bundle }),
+    );
+    expect(ctx).toContain(String(bundle.text));
+    expect(ctx).toContain("decisions/window");
+    expect(ctx).toContain("more unlinked: palinode search");
+    expect(ctx?.length).toBeLessThanOrEqual(RCFG.maxChars);
+    expect(ctx?.match(/also found \(unlinked\)/g)?.length ?? 0).toBe(name === "bounded" ? 3 : 0);
+    if (name === "minimal") expect(ctx).toContain("demoted");
+  });
 
   it("injects the resolved bundle, and a scripted consumer picks the successor", async () => {
     // The A → B replacement, resolved: a fresh session is told B, with the
@@ -379,7 +397,7 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
     ];
     const fetchFn = (async (url: unknown) => {
       if (String(url).includes("/resolve")) throw new DOMException("TimeoutError", "TimeoutError");
-      if (String(url).includes("/search")) return new Response(JSON.stringify({ results: hits }), { status: 200 });
+      if (String(url).includes("/search")) return new Response(JSON.stringify({ results: hits, receipt: { retrieval: { confidence: "confident" } } }), { status: 200 });
       return new Response("[]", { status: 200 });
     }) as FetchFn;
     const ctx = (await buildRecallContext(PROMPT, RCFG, fetchFn))!;
@@ -416,7 +434,7 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
     // /resolve aborts (the deadline); /search answers as it always has.
     const fetchFn = (async (url: unknown) => {
       if (String(url).includes("/resolve")) throw new DOMException("TimeoutError", "TimeoutError");
-      if (String(url).includes("/search")) return new Response(JSON.stringify({ results: hits }), { status: 200 });
+      if (String(url).includes("/search")) return new Response(JSON.stringify({ results: hits, receipt: { retrieval: { confidence: "confident" } } }), { status: 200 });
       return new Response("[]", { status: 200 });
     }) as FetchFn;
 
@@ -447,7 +465,7 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
       if (u.includes("/controls/check")) {
         return new Response(JSON.stringify({ allowed: true, project: "otherproj" }), { status: 200 });
       }
-      if (u.includes("/search")) return new Response(JSON.stringify({ results: hits }), { status: 200 });
+      if (u.includes("/search")) return new Response(JSON.stringify({ results: hits, receipt: { retrieval: { confidence: "confident" } } }), { status: 200 });
       return new Response("[]", { status: 200 });
     }) as FetchFn;
 
@@ -467,7 +485,7 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
       if (u.includes("/controls/check")) {
         return new Response(JSON.stringify({ allowed: true, project: null }), { status: 200 });
       }
-      if (u.includes("/search")) return new Response(JSON.stringify({ results: hits }), { status: 200 });
+      if (u.includes("/search")) return new Response(JSON.stringify({ results: hits, receipt: { retrieval: { confidence: "confident" } } }), { status: 200 });
       return new Response("[]", { status: 200 });
     }) as FetchFn;
 
@@ -497,7 +515,113 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
     expect(ctx).toBeNull();
   });
 
-  it("delivers an empty scoped bundle that says other projects were withheld", async () => {
+  const isolationLine = "2 records from other projects withheld (scope: project/alpha). They are about other projects, not this one.";
+  const isolated = {
+    selected: [], conflicts: [], replaced: [], insufficient: [],
+    omitted_conflicts: 0, other_projects_withheld: 2,
+    retrieval: { confidence: "confident" },
+    text: `### Resolved from memory (current state)\n\nNothing in memory answers this.\n${isolationLine}`,
+  };
+
+  it("delivers isolation-only news once per session, including after switching back", async () => {
+    const calls: Array<{ url: string }> = [];
+    const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": isolated }, calls);
+    const outputs = [];
+    for (const session of ["isolation-a", "isolation-a", "isolation-b", "isolation-a"]) {
+      outputs.push(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session));
+    }
+    expect(outputs[0]).toContain(isolationLine);
+    expect(outputs[1]).toBeNull();
+    expect(outputs[2]).toContain(isolationLine);
+    expect(outputs[3]).toBeNull();
+    expect(calls.some((c) => c.url.includes("/search"))).toBe(false);
+  });
+
+  it("uses the process lifetime when no session id is available", async () => {
+    const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": isolated });
+    expect(await buildRecallContext(PROMPT, RCFG, fetchFn)).toContain(isolationLine);
+    expect(await buildRecallContext(PROMPT, RCFG, fetchFn)).toBeNull();
+  });
+
+  it("keeps explicit resolve unchanged after automatic suppression", async () => {
+    const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": isolated });
+    const session = "isolation-explicit";
+    await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session);
+    expect(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session)).toBeNull();
+    for (let i = 0; i < 2; i++) {
+      expect((await resolveBundle(PROMPT, RCFG, fetchFn))?.text).toContain(isolationLine);
+    }
+  });
+
+  it("does not consume the first notice for zero withheld records or empty text", async () => {
+    const session = "isolation-empty";
+    for (const change of [{ other_projects_withheld: 0 }, { text: "" }]) {
+      const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": { ...isolated, ...change } });
+      expect(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session)).toBeNull();
+    }
+    const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": isolated });
+    expect(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session)).toContain(isolationLine);
+  });
+
+  it.each(["budget_exhausted:chars", "budget_exhausted:tokens", "budget_exhausted:items"])(
+    "stays silent when the empty selection is a %s refusal, without consuming the notice", async (reason) => {
+      // Records answered but did not fit; that is not isolation news.
+      const session = `isolation-budget-${reason}`;
+      const calls: Array<{ url: string }> = [];
+      const refused = stubFetch({ "/check-triggers": [], "/resolve": {
+        ...isolated,
+        retrieval: { confidence: "confident", selection: { selected: 0, reasons: [reason, "retired_withheld"] } },
+      } }, calls);
+      expect(await buildRecallContext(PROMPT, RCFG, refused, undefined, session)).toBeNull();
+      expect(calls.some((c) => c.url.includes("/search"))).toBe(false);
+      const retiredOnly = stubFetch({ "/check-triggers": [], "/resolve": {
+        ...isolated,
+        retrieval: { confidence: "confident", selection: { selected: 0, reasons: ["retired_withheld"] } },
+      } });
+      expect(await buildRecallContext(PROMPT, RCFG, retiredOnly, undefined, session)).toContain(isolationLine);
+    },
+  );
+
+  it.each(["weak", "none", undefined])("does not consume the notice for confidence %s", async (confidence) => {
+    const session = `isolation-confidence-${confidence}`;
+    const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": {
+      ...isolated, retrieval: confidence ? { confidence } : undefined,
+    } });
+    expect(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session)).toBeNull();
+    const confident = stubFetch({ "/check-triggers": [], "/resolve": isolated });
+    expect(await buildRecallContext(PROMPT, RCFG, confident, undefined, session)).toContain(isolationLine);
+  });
+
+  it.each(["selected", "conflicts", "replaced", "insufficient", "omitted_conflicts"])(
+    "always delivers %s with the withheld line, without consuming the isolation-only notice", async (field) => {
+      const session = `isolation-content-${field}`;
+      const fetchFn = stubFetch({ "/check-triggers": [], "/resolve": {
+        ...isolated, [field]: field === "omitted_conflicts" ? 1 : [{}],
+      } });
+      for (let i = 0; i < 2; i++) {
+        expect(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session)).toContain(isolationLine);
+      }
+      const empty = stubFetch({ "/check-triggers": [], "/resolve": isolated });
+      expect(await buildRecallContext(PROMPT, RCFG, empty, undefined, session)).toContain(isolationLine);
+      expect(await buildRecallContext(PROMPT, RCFG, empty, undefined, session)).toBeNull();
+      expect(await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session)).toContain(isolationLine);
+    },
+  );
+
+  it("still delivers fired triggers after the isolation-only notice was consumed", async () => {
+    const session = "isolation-trigger";
+    const empty = stubFetch({ "/check-triggers": [], "/resolve": isolated });
+    await buildRecallContext(PROMPT, RCFG, empty, undefined, session);
+    const fetchFn = stubFetch({
+      "/resolve": isolated, "/check-triggers": [{ memory_file: "decisions/reminder.md" }],
+      "/read": { content: "trigger reminder" },
+    });
+    const ctx = await buildRecallContext(PROMPT, RCFG, fetchFn, undefined, session);
+    expect(ctx).toContain("trigger reminder");
+    expect(ctx).not.toContain(isolationLine);
+  });
+
+  it("suppresses an empty scoped bundle without a confidence verdict", async () => {
     const line =
       "2 records from other projects withheld (scope: project/alpha). They are about other projects, not this one.";
     const isolated = {
@@ -509,7 +633,7 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
     const ctx = await buildRecallContext(
       PROMPT, RCFG, stubFetch({ "/check-triggers": [], "/resolve": isolated }),
     );
-    expect(ctx).toContain(line);
+    expect(ctx).toBeNull();
   });
 
   it("takes the plain search channel when resolution is switched off", async () => {
@@ -536,6 +660,49 @@ describe("bounded resolution (the per-turn consuming hook)", () => {
     expect(configFromEnv({}).resolveDeadlineMs).toBe(250);
     expect(configFromEnv({ PALINODE_HOOK_RESOLVE: "0" }).resolveOn).toBe(false);
     expect(configFromEnv({ PALINODE_HOOK_RESOLVE_DEADLINE: "600" }).resolveDeadlineMs).toBe(600);
+  });
+
+  it.each([
+    ["http://localhost:6340", 250], ["http://127.0.0.1:6340", 250],
+    ["http://LOCALHOST:6340", 250],
+    ["http://127.0.0.2:6340", 250], ["http://[::1]:6340", 250],
+    ["http://memory.example:6340", 1000], ["http://localhost.example:6340", 1000],
+    ["http://127.example:6340", 1000],
+  ])("chooses the deadline for %s", (apiUrl, expected) => {
+    expect(configFromEnv({ PALINODE_API_URL: apiUrl }).resolveDeadlineMs).toBe(expected);
+    expect(configFromEnv({}, { apiUrl }).resolveDeadlineMs).toBe(expected);
+    expect(configFromEnv({ PALINODE_API_URL: apiUrl, PALINODE_HOOK_RESOLVE_DEADLINE: "600" })
+      .resolveDeadlineMs).toBe(600);
+    expect(configFromEnv({}, { apiUrl, resolveDeadlineMs: 750 }).resolveDeadlineMs).toBe(750);
+  });
+
+  it.each([false, true])("a 330 ms remote resolve wins unless the 250 ms override is set (%s)", async (override) => {
+    const cfg = configFromEnv({
+      PALINODE_API_URL: "http://memory.example:6340",
+      ...(override ? { PALINODE_HOOK_RESOLVE_DEADLINE: "250" } : {}),
+    });
+    const calls: Array<{ url: string }> = [];
+    const other = stubFetch({
+      "/check-triggers": [], "/search": [{ rel_path: "insights/fallback.md", snippet: "fallback" }],
+    }, calls);
+    const fetchFn = (async (url: unknown, init?: RequestInit) => {
+      if (!String(url).includes("/resolve")) return other(url as string, init);
+      await new Promise<void>((accept, reject) => {
+        const timer = setTimeout(accept, 330);
+        init?.signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new DOMException("Timeout", "TimeoutError"));
+        }, { once: true });
+      });
+      return new Response(JSON.stringify(BUNDLES.current), { status: 200 });
+    }) as FetchFn;
+    const context = await buildRecallContext(PROMPT, cfg, fetchFn);
+    expect(calls.some((c) => c.url.includes("/search"))).toBe(override);
+    if (override) expect(context).toContain(RESOLUTION_DEADLINE_MARKER);
+    else {
+      expect(context).toContain("decisions/endpoint-v2");
+      expect(context).not.toContain(RESOLUTION_DEADLINE_MARKER);
+    }
   });
 
   it("session start does not route through resolution", async () => {
@@ -805,7 +972,7 @@ describe("configFromEnv", () => {
       minMessages: 1,
       captureOn: false,
       resolveOn: true,
-      resolveDeadlineMs: 250,
+      resolveDeadlineMs: 1000,
     });
   });
 
@@ -1015,5 +1182,43 @@ describe("clientCwd — a linked worktree sends its main repository's root", () 
     expect(clientCwd(main)).toBe(main);
     const plain = realpathSync(mkdtempSync(join(tmpdir(), "pal-plain-")));
     expect(clientCwd(plain)).toBe(plain);
+  });
+});
+
+describe("automatic precision gate", () => {
+  const hits = [{ rel_path: "insights/fixture.md", raw_score: 0.9, score: 1, snippet: "synthetic memory" }];
+  for (const confidence of ["none", "weak", undefined]) {
+    it(`suppresses ${confidence ?? "missing"} search confidence`, async () => {
+      const receipt = { retrieval: { confidence } };
+      const ctx = await buildRecallContext(PROMPT, CFG, stubFetch({
+        "/search": { results: hits, receipt }, "/check-triggers": [],
+      }));
+      expect(ctx).toBeNull();
+    });
+    it(`suppresses ${confidence ?? "missing"} resolve confidence without a fallback`, async () => {
+      const calls: Array<{ url: string; body?: unknown }> = [];
+      const ctx = await buildRecallContext(PROMPT, { ...CFG, resolveOn: true }, stubFetch({
+        "/resolve": { text: "synthetic memory", selected: [{}], retrieval: { confidence } },
+        "/search": hits, "/check-triggers": [],
+      }, calls));
+      expect(ctx).toBeNull();
+      expect(calls.some(c => c.url.includes("/search"))).toBe(false);
+    });
+  }
+  it("suppresses legacy bare arrays", async () => {
+    const ctx = await buildRecallContext(PROMPT, CFG, stubFetch({
+      "/search": hits, "/check-triggers": [],
+    }, [], true));
+    expect(ctx).toBeNull();
+  });
+  it("sends prompt mode and client scope for trigger checks", async () => {
+    const calls: Array<{ url: string; body?: unknown }> = [];
+    await buildRecallContext(PROMPT, CFG, stubFetch({
+      "/controls/check": { project: "harborlight" }, "/check-triggers": [], "/search": hits,
+    }, calls), "/client/harborlight");
+    expect(calls.find(c => c.url.includes("/check-triggers"))?.body).toMatchObject({
+      cwd: "/client/harborlight", project: "harborlight",
+    });
+    expect(calls.find(c => c.url.includes("/search"))?.body).toMatchObject({ prompt: true, receipt: true });
   });
 });

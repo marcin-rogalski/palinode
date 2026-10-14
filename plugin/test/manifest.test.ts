@@ -36,8 +36,25 @@ describe("openclaw.plugin.json", () => {
   });
 
   it("tracks package.json's version", () => {
-    const pkg = JSON.parse(read("package.json")) as { version: string };
+    const pkg = JSON.parse(read("package.json")) as {
+      version: string;
+      openclaw: { compat: { pluginApi: string } };
+    };
+    const lock = JSON.parse(read("package-lock.json")) as {
+      version: string;
+      packages: { "": { version: string } };
+    };
     expect(manifest.version).toBe(pkg.version);
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages[""].version).toBe(pkg.version);
+    expect(pkg.openclaw.compat.pluginApi).toBe(">=2026.10.3");
+  });
+
+  it("declares startup hooks and the root CLI command for host activation", () => {
+    expect(manifest.activation).toEqual({ onStartup: true });
+    expect(manifest.cliCommands).toEqual([
+      { name: "palinode", description: "Palinode memory commands", hasSubcommands: true },
+    ]);
   });
 
   it("rejects unknown keys and names the documented recall options", () => {

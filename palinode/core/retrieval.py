@@ -69,9 +69,13 @@ def search_diagnostics(
                 "SELECT file_path, metadata FROM chunks GROUP BY file_path"
             ))
         if ready and config.search.retrieval_mode != "lexical":
+            # NOT IN over one read of the vec ids, not a correlated NOT EXISTS:
+            # vec0 has no index for a per-row id probe, so the correlated form
+            # scanned the vector table once per chunk (2.7 s on a 12k-chunk
+            # store, paid by every /resolve and receipt search).
             pending = any(visible(row) for row in db.execute(
-                "SELECT c.file_path, c.metadata FROM chunks c WHERE NOT EXISTS "
-                "(SELECT 1 FROM chunks_vec v WHERE v.id = c.id) GROUP BY c.file_path"
+                "SELECT c.file_path, c.metadata FROM chunks c "
+                "WHERE c.id NOT IN (SELECT id FROM chunks_vec) GROUP BY c.file_path"
             ))
     finally:
         db.close()

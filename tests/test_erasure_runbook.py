@@ -301,6 +301,13 @@ def erasure_fixture(tmp_path, monkeypatch):
     "controlled remote", a clone of it, and a filesystem backup taken before
     any erasure. All four live under ``tmp_path``.
     """
+    # A watcher timer armed by an earlier test on this worker fires against
+    # whatever ``config.memory_dir`` names when it runs, which from here on is
+    # this store. Under ``pytest -n`` that test is a different neighbour each
+    # run; one committing mid-clone made the clone below fail with "failed to
+    # copy file ... No such file or directory" (a loose object renamed into
+    # place while the clone was copying the objects directory).
+    _quiesce_watchers()
     store_dir = tmp_path / "store"
     store_dir.mkdir()
     subprocess.run(["git", "init", "-q", str(store_dir)], check=True)
@@ -337,6 +344,7 @@ def erasure_fixture(tmp_path, monkeypatch):
         with TestClient(srv.app, raise_server_exceptions=True) as client:
             _seed(client, str(store_dir))
 
+            _quiesce_watchers()  # the clone and the backup need a quiet tree
             bare = tmp_path / "controlled-remote.git"
             subprocess.run(
                 ["git", "clone", "--quiet", "--bare", str(store_dir), str(bare)],

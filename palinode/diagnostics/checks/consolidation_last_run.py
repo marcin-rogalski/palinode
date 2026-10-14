@@ -1,10 +1,10 @@
 """Check: consolidation_last_run
 
 ``consolidation_schedule_effective`` says what the consolidation cron *should*
-run. This check says whether the last pass *worked* — and, more to the point,
-how many passes in a row have not.
+run. This check says whether the last pass *worked*, how many passes in a row
+have not, and whether the last success has gone stale for its cadence.
 
-The count is the number that matters, and what it costs changed when the
+The failure count matters, and what it costs changed when the
 nightly's window became a per-project watermark. A failed pass no longer
 advances the mark, so its notes are selected again on the next run: the first
 failures cost nothing but the delay. What a streak eventually costs is the
@@ -46,15 +46,21 @@ What counts as a failure
 left nothing unconsolidated. A dry run is never recorded — a dry-run
 "success" would reset a real streak.
 
+A cron attempt refused by the consolidation lock is recorded as
+``lock_refused``. It did not run, so it is reported as a missed run separately
+from the failed-pass streak. Either a missed run or a stale last success
+warns, even with zero consecutive failures. Stale means older than 1.5
+cadences, or, with the activity gate on, older than the gate's ceiling plus
+one cadence: a quiet store may legitimately skip passes up to that ceiling.
+
 Degradation
 -----------
-No state file, a file that cannot be read or parsed, a state file from before
-outcomes were recorded (the gate's clock alone), or a host that consolidates
-some other way: each reports what it could not see and passes with ``info``.
-The gate's clock, when that is all there is, is still reported — it is the
-last *successful* start the host knows of. Never a failure for a missing
-record: a check that fails on every laptop is a check nobody reads on the
-host where it matters.
+No state file, a file that cannot be read or parsed, or a host that
+consolidates some other way: each reports what it could not see and passes
+with ``info``. A state file from before outcomes were recorded still gives
+the gate's last *successful* start, which warns if stale. Never a failure for
+a missing record: a check that fails on every laptop is a check nobody reads
+on the host where it matters.
 
 ``fast``: one small JSON read.
 """
@@ -95,6 +101,22 @@ _OK_STATUSES = activity_gate.SUCCESS_STATUSES
 _FAIL_STATUSES = frozenset({"partial", "error"})
 
 _CADENCE = {"nightly": "daily", "weekly": "weekly"}
+_PERIOD_HOURS = {"nightly": 24, "weekly": 168}
+
+
+def stale_after_hours(mode: str, auto_gate: Any) -> float:
+    """How old a mode's last success may get before it is stale.
+
+    1.5 cadences on a plain schedule. With the activity gate on, a quiet store
+    may legitimately skip passes until the gate's ceiling
+    (``auto_gate.max_hours_elapsed``, 168 h by default), and the next cron tick
+    after that is what runs it — so the bound is the ceiling plus one cadence.
+    """
+    period = _PERIOD_HOURS[mode]
+    plain = 1.5 * period
+    if not getattr(auto_gate, "enabled", False):
+        return plain
+    return max(plain, float(auto_gate.max_hours_elapsed) + period)
 
 
 #: Where the nightly warn fires, whatever the catch-up bound. A failed nightly
@@ -148,6 +170,8 @@ class ModeSummary:
     last: dict[str, Any] | None
     #: Consecutive failed passes ending at ``last``; 0 when ``last`` is ok.
     streak: int
+    #: Scheduled attempts refused by the lock since the newest success.
+    missed: int
     #: Start of the newest ok pass, if any is recorded.
     last_ok_at: datetime | None
     #: The gate's own clock stamp — a success start — for a state file that
@@ -157,6 +181,8 @@ class ModeSummary:
     #: one. For the nightly this is the catch-up bound; for the weekly it is
     #: still the lookback window.
     lookback_days: int
+    #: Age past which the last success is stale; see :func:`stale_after_hours`.
+    stale_hours: float = 36.0
 
 
 def _is_ok(entry: dict[str, Any]) -> bool:
@@ -168,9 +194,11 @@ def summarize(
     history: list[dict[str, Any]],
     gate_entry: dict[str, Any],
     configured_lookback: int,
+    stale_hours: float | None = None,
 ) -> ModeSummary:
     """Reduce ``mode``'s outcome records (oldest first) to a :class:`ModeSummary`."""
     streak = 0
+    missed = 0
     last_ok_at: datetime | None = None
     for entry in reversed(history):
         if _is_ok(entry):
@@ -178,6 +206,8 @@ def summarize(
             break
         if str(entry.get("status")) in _FAIL_STATUSES:
             streak += 1
+        if entry.get("status") == "lock_refused":
+            missed += 1
     last = history[-1] if history else None
     recorded = last.get("lookback_days") if last else None
     lookback = recorded if isinstance(recorded, int) and recorded >= 1 else configured_lookback
@@ -185,13 +215,15 @@ def summarize(
         mode=mode,
         last=last,
         streak=streak,
+        missed=missed,
         last_ok_at=last_ok_at,
         gate_stamp=activity_gate._parse_timestamp(gate_entry.get("last_run_at")),
         lookback_days=max(int(lookback), 1),
+        stale_hours=stale_hours if stale_hours is not None else 1.5 * _PERIOD_HOURS[mode],
     )
 
 
-def _level(summary: ModeSummary) -> int:
+def _streak_level(summary: ModeSummary) -> int:
     """0 ok, 1 warn, 2 error — the streak against the mode's own thresholds."""
     if summary.mode == "nightly":
         warn_at, fail_at = nightly_thresholds(summary.lookback_days)
@@ -202,6 +234,23 @@ def _level(summary: ModeSummary) -> int:
     if summary.streak >= warn_at:
         return 1
     return 0
+
+
+def _last_success(summary: ModeSummary) -> datetime | None:
+    stamps = [stamp for stamp in (summary.last_ok_at, summary.gate_stamp) if stamp]
+    return max(stamps) if stamps else None
+
+
+def _age_problem(summary: ModeSummary, now: datetime) -> str | None:
+    last_success = _last_success(summary)
+    threshold = summary.stale_hours
+    if last_success is None or (now - last_success).total_seconds() <= threshold * 3600:
+        return None
+    return f"{summary.mode} last success is older than {threshold:g} h ({_ago(last_success, now)})"
+
+
+def _level(summary: ModeSummary, now: datetime) -> int:
+    return max(_streak_level(summary), int(summary.missed > 0 or _age_problem(summary, now) is not None))
 
 
 # ---------------------------------------------------------------------------
@@ -266,11 +315,13 @@ def _describe(summary: ModeSummary, now: datetime, why_nightly: str) -> str:
     if summary.last is None:
         if summary.gate_stamp is None:
             return f"{mode}: no run recorded"
-        return (
+        clause = (
             f"{mode}: no outcome recorded yet (outcomes are kept from this release "
             f"on); the activity gate last stamped a successful run at "
             f"{_stamp(summary.gate_stamp)} ({_ago(summary.gate_stamp, now)})"
         )
+        age_problem = _age_problem(summary, now)
+        return f"{clause} — {age_problem}" if age_problem else clause
 
     last = summary.last
     started = activity_gate._parse_timestamp(last.get("started_at"))
@@ -286,10 +337,11 @@ def _describe(summary: ModeSummary, now: datetime, why_nightly: str) -> str:
     if last.get("error"):
         details.append(f"raised {last['error']}")
 
-    if summary.last_ok_at is not None:
+    last_success = _last_success(summary)
+    if last_success is not None:
         since_ok = (
-            f"last success {_stamp(summary.last_ok_at)} "
-            f"({_ago(summary.last_ok_at, now)}, {_CADENCE[mode]} cadence)"
+            f"last success {_stamp(last_success)} "
+            f"({_ago(last_success, now)}, {_CADENCE[mode]} cadence)"
         )
     else:
         since_ok = "no successful run in the recorded history"
@@ -300,7 +352,14 @@ def _describe(summary: ModeSummary, now: datetime, why_nightly: str) -> str:
         f"{summary.streak} consecutive failure{plural}; {since_ok}"
     )
 
-    level = _level(summary)
+    if summary.missed:
+        plural = "" if summary.missed == 1 else "s"
+        clause += f" — {summary.missed} missed run{plural} due to consolidation lock"
+    age_problem = _age_problem(summary, now)
+    if age_problem:
+        clause += f" — {age_problem}"
+
+    level = _streak_level(summary)
     if mode == "nightly" and level == 2:
         clause += (
             f" — {summary.streak} in a row reaches the {summary.lookback_days}-day "
@@ -370,7 +429,13 @@ def consolidation_last_run(ctx: DoctorContext) -> CheckResult:
         "weekly": int(consolidation.lookback_days),
     }
     summaries = [
-        summarize(mode, _history(state, mode), _gate_entry(state, mode), configured[mode])
+        summarize(
+            mode,
+            _history(state, mode),
+            _gate_entry(state, mode),
+            configured[mode],
+            stale_after_hours(mode, consolidation.auto_gate),
+        )
         for mode in ("nightly", "weekly")
     ]
     if all(s.last is None and s.gate_stamp is None for s in summaries):
@@ -383,7 +448,7 @@ def consolidation_last_run(ctx: DoctorContext) -> CheckResult:
         + "; ".join(_describe(s, now, why_nightly) for s in summaries)
         + "."
     )
-    worst = max(_level(s) for s in summaries)
+    worst = max(_level(s, now) for s in summaries)
 
     if worst == 0:
         return CheckResult(
@@ -411,7 +476,8 @@ def consolidation_last_run(ctx: DoctorContext) -> CheckResult:
             "failed ones left behind — their watermarks never advanced — as long "
             "as the marks are still inside the catch-up bound "
             "(`consolidation.nightly.lookback_days`, or `--days N` on the cron "
-            "line); past that the pass reports what it skipped."
+            "line); past that the pass reports what it skipped. For a lock-refused "
+            "cron attempt, separate the nightly and weekly schedule times."
         ),
         tags=("fast",),
     )

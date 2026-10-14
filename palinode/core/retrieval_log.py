@@ -159,13 +159,23 @@ class RetrievalLogger:
             self._path = None
             return
 
+        # The ``.audit`` directory is created on the first write, not here:
+        # ``palinode.api._util`` builds one of these at import time, and an
+        # import must not create directories in the process-default store.
         self._path = Path(memory_dir) / ".audit" / _LOG_FILENAME
+
+    def _ensure_parent(self) -> bool:
+        """Create the log's parent directory; disable the logger if that fails."""
+        if self._path is None:
+            return False
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             logger.warning("Cannot create retrieval-log directory %s: %s", self._path.parent, exc)
             self._enabled = False
             self._path = None
+            return False
+        return True
 
     @property
     def enabled(self) -> bool:
@@ -180,6 +190,8 @@ class RetrievalLogger:
         if not self._enabled or self._path is None:
             return
         entry = asdict(event)
+        if not self._ensure_parent():
+            return
         try:
             with open(self._path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, separators=(",", ":"), default=str) + "\n")
@@ -248,6 +260,8 @@ class RetrievalLogger:
             encoded = (json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8")
             if len(encoded) > MAX_RECEIPT_BYTES:
                 logger.warning("Bundle receipt exceeds audit size limit")
+                return
+            if not self._ensure_parent():
                 return
             with open(self._path, "ab") as fh:
                 fh.write(encoded)

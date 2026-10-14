@@ -1,4 +1,5 @@
 #!/bin/bash
+# palinode-hook-version: 0.23.0
 # palinode-session-end.sh — Auto-capture Claude Code sessions to Palinode.
 #
 # Fires on SessionEnd (including /clear, logout, exit). Reads the transcript
@@ -102,22 +103,34 @@ if [ "$MSG_COUNT" -lt "$MIN_MESSAGES" ]; then
   exit 0
 fi
 
-# The first user turn is a *topic hint*, not content — and in Claude Code it is
+# The first human ask is a *topic hint*, not content — and in Claude Code it is
 # routinely wrapped in harness markup (slash-command expansion, system
 # reminders, bash/IDE blocks). Left in, that markup is embedded and indexed as
 # though it were what the session was about. Strip it here, at the
 # source: wrapper blocks whose body is machinery lose the whole block; the
-# command-name tags lose only the tags, keeping the human-meaningful text. A
-# `type` guard keeps gsub safe when `content` is a block array rather than a
-# string, and `|| echo ""` keeps a jq failure from tripping `set -e`.
+# command-name tags lose only the tags, keeping the human-meaningful text.
+#
+# The topic is the first user turn that still has human text after stripping,
+# not blindly the first user turn: after /clear the transcript opens with a
+# harness-generated (`isMeta`) <local-command-caveat> turn, then the bare
+# `/clear` invocation, and only then the real ask. So: skip `isMeta`
+# turns, drop the caveat block whole, treat a command invocation with empty
+# args as no text, read only `text` blocks from block-array content (a
+# tool_result turn has no human text), and take the first non-empty result.
+# `|| echo ""` keeps a jq failure from tripping `set -e`.
 FIRST_PROMPT=$(jq -r -s '
-    map(select(.type == "user") | .message.content // empty) | .[0] // ""
-    | if type == "string" then . else tojson end
-    | gsub("<system-reminder>.*?</system-reminder>"; ""; "s")
-    | gsub("<local-command-std(out|err)>.*?</local-command-std(out|err)>"; ""; "s")
-    | gsub("<bash-(input|stdout|stderr)>.*?</bash-(input|stdout|stderr)>"; ""; "s")
-    | gsub("</?(command-message|command-name|command-args|user-prompt-submit-hook|ide_selection|ide_opened_file)>"; " ")
-    | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")' \
+    [ .[] | select(.type == "user" and .isMeta != true) | .message.content // empty
+      | if type == "string" then .
+        elif type == "array" then [ .[] | select(type == "object" and .type == "text") | .text // "" ] | join(" ")
+        else tojson end
+      | gsub("<local-command-caveat>.*?</local-command-caveat>"; ""; "s")
+      | gsub("<system-reminder>.*?</system-reminder>"; ""; "s")
+      | gsub("<local-command-std(out|err)>.*?</local-command-std(out|err)>"; ""; "s")
+      | gsub("<bash-(input|stdout|stderr)>.*?</bash-(input|stdout|stderr)>"; ""; "s")
+      | if test("<command-name>") and (gsub("<command-(name|message)>[^<]*</command-(name|message)>|<command-args>\\s*</command-args>"; "") | test("^\\s*$")) then "" else . end
+      | gsub("</?(command-message|command-name|command-args|user-prompt-submit-hook|ide_selection|ide_opened_file)>"; " ")
+      | gsub("\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
+      | select(length > 0) ] | .[0] // ""' \
   "$TRANSCRIPT_PATH" 2>/dev/null | cut -c1-200 || echo "")
 
 SUMMARY="Auto-captured (${SOURCE_REASON}, ${MSG_COUNT} messages). Topic: ${FIRST_PROMPT}"

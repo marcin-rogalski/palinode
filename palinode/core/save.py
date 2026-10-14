@@ -161,16 +161,24 @@ def _normalize_claims_or_reject(raw: Any, memory_ref: str) -> list[dict[str, Any
 
 
 # Derived on every save, or carried by a rule of their own; never copied by the carry.
-_APPEND_NEVER_CARRIED = frozenset({
+_NEVER_CARRIED_FRONTMATTER = frozenset({
     "id", "category", "type", "content_hash", "last_updated", "auditable_memory",
     "source", "created_at", "update_policy", "epistemic", "ttl",
+})
+_REPLACE_BODY_BOUND = frozenset({
+    "description", "description_pending", "summary", "summary_pending",
+    "claims", "sources",
+    # A re-save is the "re-verified against its sources" act that clears a
+    # retired-source flag (consolidation/propagate.py), so it never carries.
+    "stale_backing",
 })
 
 
 def _carry_prior_frontmatter(
-    frontmatter_dict: dict[str, Any], prior: dict[str, Any], *, has_entities: bool
+    frontmatter_dict: dict[str, Any], prior: dict[str, Any], *,
+    has_entities: bool, extra_never_carried: frozenset[str] = frozenset(),
 ) -> None:
-    never_carried = set(_APPEND_NEVER_CARRIED)
+    never_carried = set(_NEVER_CARRIED_FRONTMATTER | extra_never_carried)
     if config.ku_compat.enabled:
         # ku_compat derives these; a carried copy would block the re-derivation.
         never_carried.add("ku_version")
@@ -306,11 +314,13 @@ def save_memory(
             semantic: ``"append"`` against an existing ``(category, slug)``
             adds to that document (prior body kept verbatim, new content under
             a dated append heading, every prior frontmatter key this save does
-            not set kept), ``"replace"`` overwrites it in place and
+            not set kept). ``"replace"`` replaces the body in place, keeps
+            record frontmatter except old-body descriptions and anchors, and
             marks it a living document consolidation must not fork into
             history. Sticky frontmatter — carried forward from the existing
-            file when omitted. A save that declares *no* policy overwrites, as
-            it always has; only an explicit (or inherited) ``append`` appends.
+            file when omitted. A save that declares *no* policy also replaces
+            the body while keeping record frontmatter; only an explicit (or
+            inherited) ``append`` appends.
         sources: Source-citation quote anchors; ``quote_hash`` computed when
             absent, verified when supplied.
         epistemic: ADR-018 epistemic marker. Sticky, like ``update_policy``.
@@ -602,8 +612,8 @@ def save_memory(
     resolved_update_policy = _effective_update_policy
     # The prior body, when the target already exists. Read here (the block
     # below is already reading the file) and consumed by the append
-    # composition; left empty on any read failure, so an unreadable existing
-    # file degrades to a plain write rather than to a half-composed one.
+    # composition. An unreadable file, or one whose frontmatter does not
+    # parse, stops the rewrite: its privacy frontmatter cannot be carried.
     _existing_body = ""
     _existing_meta: dict[str, Any] = {}
     if os.path.exists(file_path):
@@ -612,6 +622,10 @@ def save_memory(
             with open(file_path, "r", encoding="utf-8") as _existing:
                 _existing_raw = _existing.read()
             _existing_meta, _ = _parser.parse_markdown(_existing_raw)
+            # A file with no frontmatter has no privacy to lose; one whose
+            # frontmatter does not parse might, so it cannot be rewritten blind.
+            if not _existing_meta and _existing_raw.lstrip().startswith("---"):
+                raise ValueError("malformed frontmatter")
             _, _existing_body = _parser.split_frontmatter(_existing_raw)
             _prior_created = _existing_meta.get("created_at")
             if _prior_created:
@@ -634,15 +648,9 @@ def save_memory(
                 if _prior_epistemic in _VALID_EPISTEMICS:
                     _effective_epistemic = str(_prior_epistemic)
         except (OSError, ValueError) as exc:
-            # Unreadable/unparseable existing file: fail open to today's
-            # behaviour (stamp now) rather than block the save. The overwrite
-            # itself proceeds normally below.
-            _existing_body = ""
-            logger.warning(
-                "Could not read existing created_at for %r (%s); stamping now",
-                file_path,
-                exc,
-            )
+            raise SaveValidationError(
+                f"Could not read existing frontmatter for {file_path!r}; refusing rewrite"
+            ) from exc
 
     # ADR-015 §2.1: `append` is a write semantic, not only a compaction marker.
     # A save declaring `append` against an existing (category, slug) adds to
@@ -732,12 +740,20 @@ def save_memory(
         raise SaveValidationError(_expiry_err)
     # After the expiry so a new ttl beats the carried expires_at, and before the
     # ku_compat block, which fills lifecycle only when it is absent.
-    if save_outcome == "appended":
+    if save_outcome in {"appended", "replaced"}:
         _carry_prior_frontmatter(
             frontmatter_dict,
             _existing_meta,
             has_entities=bool(entities) or bool((metadata or {}).get("entities")),
+            extra_never_carried=(
+                _REPLACE_BODY_BOUND if save_outcome == "replaced" else frozenset()
+            ),
         )
+    # Privacy belongs to the existing memory, regardless of write policy.
+    # Caller-supplied values have already passed the Layer 2 validation above.
+    for key in ("visibility", "scope", "access"):
+        if key not in frontmatter_dict and key in _existing_meta:
+            frontmatter_dict[key] = _existing_meta[key]
     if core is not None:
         frontmatter_dict["core"] = core
     if _effective_confidence is not None:
@@ -779,8 +795,10 @@ def save_memory(
         validated = _parse_ext_refs({"external_refs": external_refs})
         if validated is not None:
             frontmatter_dict["external_refs"] = validated
+        elif not external_refs and save_outcome == "replaced":
+            frontmatter_dict["external_refs"] = {}
     # ADR-010: explicit ``title`` overrides metadata-supplied title.
-    if title:
+    if title or (title is not None and save_outcome == "replaced"):
         frontmatter_dict["title"] = title
     # source-citation anchors. Only written when provided so frontmatter
     # stays clean otherwise. Validation (computes/verifies quote_hash, rejects
@@ -803,9 +821,13 @@ def save_memory(
     )
     _resolved_contradicts = _normalize_link_refs(_contradicts_in, "contradicts")
     _resolved_backed_by = _normalize_link_refs(_backed_by_in, "backed_by")
-    if _resolved_contradicts:
+    if _resolved_contradicts or (
+        _contradicts_in is not None and save_outcome == "replaced"
+    ):
         frontmatter_dict["contradicts"] = _resolved_contradicts
-    if _resolved_backed_by:
+    if _resolved_backed_by or (
+        _backed_by_in is not None and save_outcome == "replaced"
+    ):
         frontmatter_dict["backed_by"] = _resolved_backed_by
 
     # Claim-level source anchors: resolved param-or-metadata like the typed
@@ -844,8 +866,11 @@ def save_memory(
     # Layer 2 wiki contract: auto-append See also footer for any entities
     # not already referenced as [[wikilinks]] in the body.
     footer_entities = normalized_entities
-    if save_outcome == "appended" and isinstance(frontmatter_dict["entities"], list):
-        # The composed body lost the prior footer, so rebuild it from the carried list;
+    if (
+        save_outcome in {"appended", "replaced"}
+        and isinstance(frontmatter_dict["entities"], list)
+    ):
+        # The final body needs a footer rebuilt from the final entities list;
         # only strings name a page, and the list may hold whatever a caller sent.
         footer_entities = [e for e in frontmatter_dict["entities"] if isinstance(e, str)]
     body_content = _apply_wiki_footer(effective_content, footer_entities)

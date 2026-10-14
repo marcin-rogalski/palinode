@@ -137,7 +137,7 @@ def test_receipt_write_failure_and_bound_do_not_change_delivery(mem, monkeypatch
     for bound in (0, MAX_RECEIPT_BYTES):
         monkeypatch.setattr(retrieval_log, "MAX_RECEIPT_BYTES", bound)
         if bound:
-            (mem / ".audit/retrievals.jsonl").mkdir()
+            (mem / ".audit/retrievals.jsonl").mkdir(parents=True)
         with TestClient(app) as client:
             response = client.post("/resolve", json={"query": "endpoint production traffic"})
         assert response.status_code == 200

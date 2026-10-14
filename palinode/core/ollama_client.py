@@ -656,6 +656,13 @@ class OllamaClient:
         self._rng = rng or random.Random()
         self._lock = threading.Lock()
         self._circuits: dict[OllamaRole, CircuitBreaker] = {}
+        # Breakers for per-call ``base_url`` overrides that point somewhere other
+        # than the role's configured host (the CHAT / consolidation fallback
+        # chains). Keyed apart from the role breaker so a dead primary cannot
+        # fast-fail its own backups, and a dead backup cannot open the primary's
+        # breaker. Not reported in metrics(): the role breaker stays "is the
+        # configured host healthy", which is what the doctor check means.
+        self._endpoint_circuits: dict[tuple[OllamaRole, str], CircuitBreaker] = {}
         self._metrics: dict[OllamaRole, RollingMetrics] = {}
         self._embed_ok_once = False
 
@@ -667,6 +674,20 @@ class OllamaClient:
             if cb is None:
                 cb = self._circuit_factory()
                 self._circuits[role] = cb
+            return cb
+
+    def _circuit_for(self, role: OllamaRole, base_url: str | None) -> CircuitBreaker:
+        """The breaker guarding a call: the role's own, or the override host's."""
+        if base_url is None:
+            return self._circuit(role)
+        key = base_url.rstrip("/")
+        if key == _resolve_base_url(role).rstrip("/"):
+            return self._circuit(role)
+        with self._lock:
+            cb = self._endpoint_circuits.get((role, key))
+            if cb is None:
+                cb = self._circuit_factory()
+                self._endpoint_circuits[(role, key)] = cb
             return cb
 
     def _metric(self, role: OllamaRole) -> RollingMetrics:
@@ -713,14 +734,15 @@ class OllamaClient:
         """POST ``payload`` to ``{role_url}{path}``, returning parsed JSON.
 
         ``base_url`` overrides the role's configured URL for this call — used by
-        the consolidation fallback chain, where each attempt targets a different
-        host while staying under the same role's circuit/metrics bucket.
+        the consolidation and CHAT fallback chains, where each attempt targets a
+        different host. Metrics stay in the role's bucket; a host other than the
+        role's configured one gets its own circuit breaker (see ``_circuit_for``).
 
         Applies circuit breaking, retry/backoff, structured logging, and metrics.
         Raises a typed :class:`OllamaError` subclass on failure; never leaks a
         bare httpx exception.
         """
-        cb = self._circuit(role)
+        cb = self._circuit_for(role, base_url)
         if not cb.allow():
             self._emit(
                 "circuit_open_fast_fail", role, path, model, latency_ms=0.0,
@@ -766,7 +788,7 @@ class OllamaClient:
                         role=role.value, model=model,
                     ) from je
                 latency_ms = (self._monotonic() - t0) * 1000.0
-                self._on_success(role, latency_ms)
+                self._on_success(role, latency_ms, cb=cb)
                 self._emit(
                     "request", role, path, model, latency_ms=latency_ms,
                     retry_count=attempt, circuit_state=cb.state.value,
@@ -836,7 +858,7 @@ class OllamaClient:
                     continue
             # Out of retries (or non-retryable transient): record + trip + raise.
             latency_ms = (self._monotonic() - t0) * 1000.0
-            opened = self._on_failure(role, latency_ms, trip=True)
+            opened = self._on_failure(role, latency_ms, trip=True, cb=cb)
             total_ms = (self._monotonic() - t_start) * 1000.0
             self._emit(
                 "request", role, path, model, latency_ms=total_ms,
@@ -866,14 +888,19 @@ class OllamaClient:
         remaining = cb.cooldown_seconds - (self._monotonic() - cb._opened_at)
         return max(0.0, remaining)
 
-    def _on_success(self, role: OllamaRole, latency_ms: float) -> None:
-        self._circuit(role).record_success()
+    def _on_success(
+        self, role: OllamaRole, latency_ms: float, *, cb: CircuitBreaker | None = None,
+    ) -> None:
+        (cb or self._circuit(role)).record_success()
         self._metric(role).record(latency_ms, ok=True)
 
-    def _on_failure(self, role: OllamaRole, latency_ms: float, *, trip: bool) -> bool:
+    def _on_failure(
+        self, role: OllamaRole, latency_ms: float, *, trip: bool,
+        cb: CircuitBreaker | None = None,
+    ) -> bool:
         self._metric(role).record(latency_ms, ok=False)
         if trip:
-            return self._circuit(role).record_failure()
+            return (cb or self._circuit(role)).record_failure()
         return False
 
     @staticmethod

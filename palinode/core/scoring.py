@@ -81,6 +81,8 @@ def describe_diagnostics(value: dict[str, Any]) -> str:
             # Say why the verdict is below what an arm on its own claimed, or
             # the arm evidence beside it reads as a contradiction.
             line += " · uncorroborated: the keyword arm does not reach this query"
+        if value.get("co_occurrence") == "chance":
+            line += " · keyword match is what chance gives this index"
     return line
 
 

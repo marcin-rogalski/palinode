@@ -45,7 +45,7 @@ describe("composeInjectionFrame", () => {
     const frame = composeInjectionFrame(injection);
 
     expect(frame.kind).toBe("system");
-    expect(frame).toHaveProperty("systemContext", injection);
+    expect(frame).toHaveProperty("prependSystemContext", injection);
     expect(frame).not.toHaveProperty("prependContext");
   });
 

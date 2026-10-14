@@ -36,6 +36,7 @@ from palinode.core.auth import (
 from palinode.core.config import config
 from palinode.core.context_prime import InvalidProjectScope
 from palinode.core.embedder import EmbeddingInputError, EmbeddingUnavailable
+from palinode.core.log_files import LazyDirFileHandler
 
 # Re-exported so the health/status routers can reach the client factory via
 # `palinode.api.server.get_ollama_client` (late `_srv.get_ollama_client()`
@@ -217,8 +218,9 @@ sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(messa
 sh.addFilter(_secret_filter)
 _parent_logger.addHandler(sh)
 
-os.makedirs(os.path.join(config.palinode_dir, "logs"), exist_ok=True)
-fh = logging.FileHandler(os.path.join(config.palinode_dir, config.logging.operations_log))
+# Directory and file are created on the first record, not at import (see
+# palinode.core.log_files).
+fh = LazyDirFileHandler(os.path.join(config.palinode_dir, config.logging.operations_log))
 fh.setFormatter(JsonlFormatter())
 fh.addFilter(_secret_filter)
 _parent_logger.addHandler(fh)
@@ -237,6 +239,16 @@ async def lifespan(app: FastAPI):
     path_warnings = config.validate_paths()
     for warning in path_warnings:
         _startup_logger.warning(warning)
+
+    # Logged at startup rather than at import: importing this module must not
+    # write the operations log (``fh`` above opens it on the first record).
+    # (``logger`` is rebound locally further down, so name the API logger here.)
+    _api_logger = logging.getLogger("palinode.api")
+    _api_logger.info("CORS origins: %s", ", ".join(_cors_origins))
+    if _api_token is not None:
+        _api_logger.info("API bearer-token auth: enabled")
+    else:
+        _api_logger.info("API bearer-token auth: disabled (no PALINODE_API_TOKEN)")
 
     # when auto_commit is enabled but memory_dir is not a git
     # repository, every /save's `git add` + `git commit` silently no-ops
@@ -424,7 +436,6 @@ _cors_origins = _parse_cors_origins(
         "http://localhost:3000,http://127.0.0.1:3000",
     )
 )
-logger.info("CORS origins: %s", ", ".join(_cors_origins))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -489,10 +500,6 @@ _validate_auth_config(_api_token)
 # spend bandwidth streaming a body that will be rejected anyway. The
 # middleware is a cheap no-op when _api_token is None.
 app.add_middleware(_BearerAuthMiddleware, token=_api_token, exempt_paths=_API_EXEMPT_PATHS)
-if _api_token is not None:
-    logger.info("API bearer-token auth: enabled")
-else:
-    logger.info("API bearer-token auth: disabled (no PALINODE_API_TOKEN)")
 
 class _BodySizeLimitMiddleware:
     """ASGI middleware enforcing _MAX_REQUEST_BYTES on the *streamed* body.
@@ -620,10 +627,12 @@ class _CapturePauseMiddleware:
     # a store-wide pause does — it stops explicit MCP/API calls too. Their
     # previews and `/corrections/dismiss` are deliberately absent: a preview
     # writes nothing, and a dismissal marks an operational queue row rather
-    # than capturing anything into memory.
+    # than capturing anything into memory. `/handoff/import/apply` writes
+    # someone else's records into this store, so a pause stops it too; the
+    # import preview writes nothing.
     _CAPTURE_PATHS = {
         "/save", "/session-end", "/ingest", "/ingest-url",
-        "/corrections/apply", "/corrections/undo",
+        "/corrections/apply", "/corrections/undo", "/handoff/import/apply",
     }
     _RECALL_PATHS = {
         "/search", "/search-associative", "/dedup-suggest", "/orphan-repair",
@@ -709,6 +718,7 @@ from palinode.api.enrichment import (  # noqa: E402,F401
 
 # ── Register sub-routers (routes moved from this module) ─────────────────────
 from palinode.api.routers.aliases import router as _aliases_router  # noqa: E402
+from palinode.api.routers.handoff import router as _handoff_router  # noqa: E402
 from palinode.api.routers.consolidation import router as _consolidation_router  # noqa: E402
 from palinode.api.routers.controls import router as _controls_router  # noqa: E402
 from palinode.api.routers.context import router as _context_router  # noqa: E402
@@ -734,6 +744,7 @@ app.include_router(_session_router)
 app.include_router(_context_router)
 app.include_router(_explain_router)
 app.include_router(_aliases_router)
+app.include_router(_handoff_router)
 
 # ── Local read-only provenance UI (Phase 0) ─────────────────────────────────
 # Server-rendered HTML under /ui — no new service, loopback-only, read-only.

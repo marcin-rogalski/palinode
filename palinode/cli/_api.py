@@ -80,9 +80,13 @@ class PalinodeAPI:
         *,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
-        self.base_url = os.environ.get(
-            "PALINODE_API",
-            f"http://{config.services.api.host}:{config.services.api.port}",
+        # PALINODE_API is the CLI's own override. PALINODE_API_URL is the name
+        # the hooks and plugins read, so a client set up for those reaches
+        # the same server here instead of falling through to the bind address.
+        self.base_url = (
+            os.environ.get("PALINODE_API")
+            or os.environ.get("PALINODE_API_URL")
+            or f"http://{config.services.api.host}:{config.services.api.port}"
         )
         # A whole client may be injected, or just a transport (tests hand in a
         # transport that dispatches to an in-process ASGI app so the default
@@ -362,6 +366,7 @@ class PalinodeAPI:
         include_retired: bool = False,
         project: str | None = None,
         include_other_projects: bool = False,
+        prompt: bool = False,
     ) -> dict[str, Any]:
         """Bounded resolution via the API.  ADR-010.
 
@@ -372,6 +377,8 @@ class PalinodeAPI:
         this and resolves in-process instead (the operation needs no model).
         """
         body: dict[str, Any] = {}
+        if prompt:
+            body["prompt"] = True
         if project:
             body["project"] = project
         if query:
@@ -650,6 +657,44 @@ fields, the session-end hook audit push)."""
     def aliases_remove(self, member: str, dry_run: bool = False) -> dict[str, Any]:
         payload = {"member": member, "dry_run": dry_run}
         response = self.client.post("/aliases/remove", json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    def handoff_export(
+        self,
+        project: str,
+        types: list[str] | None = None,
+        paths: list[str] | None = None,
+        include: list[str] | None = None,
+        since: str | None = None,
+        expect_digest: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"project": project}
+        for key, value in (("types", types), ("paths", paths), ("include", include),
+                           ("since", since), ("expect_digest", expect_digest)):
+            if value:
+                payload[key] = value
+        # A whole-store walk plus one read per record: give it the sweep budget
+        # rather than the 30 s default on a large store.
+        response = self.client.post("/handoff/export", json=payload, timeout=120.0)
+        response.raise_for_status()
+        return response.json()
+
+    def handoff_import(
+        self,
+        bundle: dict[str, Any],
+        project: str | None = None,
+        expect_digest: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"bundle": bundle}
+        if project:
+            payload["project"] = project
+        route = "/handoff/import"
+        if expect_digest:
+            payload["expect_digest"] = expect_digest
+            route = "/handoff/import/apply"
+        # Same sweep budget as export: the plan walks the recipient's store.
+        response = self.client.post(route, json=payload, timeout=120.0)
         response.raise_for_status()
         return response.json()
 

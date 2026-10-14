@@ -36,10 +36,11 @@ console = Console()
     default=False,
     help="Also show records tagged to other projects, labelled with their project.",
 )
+@click.option("--prompt", is_flag=True, help="Shape a raw user prompt for recall.")
 @click.option("--format", "fmt", type=click.Choice(["json", "text"]), help="Output format")
 def resolve(
     query, ref, context, intent, max_items, max_chars, include_retired,
-    include_other_projects, fmt,
+    include_other_projects, prompt, fmt,
 ):
     """Ask what memory currently holds about QUERY (or about one record).
 
@@ -62,6 +63,7 @@ def resolve(
     try:
         data = api_client.resolve(
             query=query,
+            prompt=prompt,
             ref=ref,
             context=list(context) or None,
             intent=intent,
@@ -87,6 +89,7 @@ def resolve(
 
         request = BundleRequest(
             query=query,
+            prompt=prompt,
             ref=ref,
             context=tuple(context),
             intent=intent or "current_state",

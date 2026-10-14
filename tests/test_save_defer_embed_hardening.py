@@ -234,6 +234,13 @@ def test_cli_save_timeout_follows_the_env_var():
     assert _cli_save_read_timeout("90") == 90.0
 
 
+@pytest.mark.parametrize("raw", ["30s", "", "0", "-5", "nan", "inf"])
+def test_cli_save_timeout_ignores_a_malformed_env_var(raw):
+    """A malformed value falls back to 30 s instead of failing the import
+    every entrypoint makes."""
+    assert _cli_save_read_timeout(raw) == 30.0
+
+
 # ── the MCP receipt ─────────────────────────────────────────────────────────
 
 def _mcp_save_reply(monkeypatch, body: dict) -> str:

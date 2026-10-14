@@ -10,11 +10,90 @@ the suite to a proven-warm embed path; cold-path tests
 """
 from __future__ import annotations
 
+import atexit
 import copy
 import os
 import pathlib
+import shutil
+import tempfile
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Hermeticity: run before anything imports ``palinode.core.config``.
+#
+# This module is imported by pytest before any test module is collected, and it
+# imports nothing from ``palinode`` at module level, so the block below runs
+# before the config singleton is first built. Keep it that way: a ``palinode``
+# import above this line would resolve the config from the developer's
+# environment before it is neutralised.
+# ---------------------------------------------------------------------------
+
+# Opt-in switches for the test harness itself, not palinode configuration.
+# ``PALINODE_TEST_*`` names are kept by prefix; these two predate that rule.
+_KEPT_PALINODE_ENV = frozenset({
+    "PALINODE_CORRECTION_BASELINE",
+    "PALINODE_GUARD_SCOPE_SANDBOX",
+})
+
+
+def _neutralise_palinode_env() -> str:
+    """Drop the developer's ``PALINODE_*`` env and point ``PALINODE_DIR`` at a sandbox.
+
+    The suite used to inherit whatever the shell exported. With ``PALINODE_DIR``
+    naming a client-only config whose ``services.api.host`` is remote, every run
+    aborted at collection with the bearer-auth bind-gate INTERNALERROR; with it
+    unset, the process default is ``~/palinode``, so importing the API server or
+    the watcher read that store's config and created ``logs/`` and ``.audit/``
+    inside it.
+
+    Unsetting alone is not enough: the unset default is the real ``~/palinode``.
+    So ``PALINODE_DIR`` is always set, to an empty per-process directory, unless
+    a harness names one explicitly via ``PALINODE_TEST_DIR`` (a subprocess
+    session that needs its own sandbox store, for instance).
+    """
+    for name in list(os.environ):
+        if (
+            name.startswith("PALINODE_")
+            and not name.startswith("PALINODE_TEST_")
+            and name not in _KEPT_PALINODE_ENV
+        ):
+            del os.environ[name]
+
+    explicit = os.environ.get("PALINODE_TEST_DIR")
+    if explicit:
+        os.environ["PALINODE_DIR"] = explicit
+        return explicit
+    sandbox = tempfile.mkdtemp(prefix="palinode-pytest-dir-")
+    atexit.register(shutil.rmtree, sandbox, ignore_errors=True)
+    os.environ["PALINODE_DIR"] = sandbox
+    return sandbox
+
+
+def _disable_git_auto_maintenance() -> None:
+    """Stop git from running background gc/maintenance in test repositories.
+
+    Every commit can end in ``git maintenance run --auto`` (detached on recent
+    git), which creates and deletes ``objects/maintenance.lock`` while the test
+    that made the commit is copying or removing the repository. ``shutil``
+    then fails on a file that vanished between listing and copying. Set via
+    ``GIT_CONFIG_*`` so it reaches every git process the suite starts, palinode's
+    own commits and clones included, without touching any repository's config.
+    Appends to an existing ``GIT_CONFIG_COUNT`` rather than replacing it.
+    """
+    try:
+        count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError:
+        count = 0
+    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
+        os.environ[f"GIT_CONFIG_KEY_{count}"] = key
+        os.environ[f"GIT_CONFIG_VALUE_{count}"] = value
+        count += 1
+    os.environ["GIT_CONFIG_COUNT"] = str(count)
+
+
+SANDBOX_PALINODE_DIR = _neutralise_palinode_env()
+_disable_git_auto_maintenance()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -218,7 +297,10 @@ _TESTS_ROOT = pathlib.Path(__file__).resolve().parent
 # the database those tests are supposed to fill. Every live save therefore
 # trips a guard whose premise — "touching the resolved default means you forgot
 # to redirect" — only holds for suites that run against ``tmp_path``. There is
-# nothing to redirect to here: the real directory *is* the fixture.
+# nothing to redirect to here: the real directory *is* the fixture. (An exported
+# ``PALINODE_DIR`` is now replaced by a sandbox at the top of this file; a
+# harness that wants the session to resolve its directory exports
+# ``PALINODE_TEST_DIR`` instead.)
 #
 # Named here rather than shadowed from a ``tests/live/conftest.py`` so the
 # exemption sits one screen from the guard it narrows. It should read as
@@ -282,6 +364,57 @@ def _no_writes_to_the_default_db(request, _default_db_path):
             "    monkeypatch.setattr(config, 'memory_dir', str(tmp_path))\n"
             "    monkeypatch.setattr(config, 'db_path', str(tmp_path / '.palinode.db'))"
         )
+
+
+# Modules whose behaviour depends on the host OS, matched against the test
+# file's basename. Every item they collect gets the ``platform_sensitive``
+# marker, which is what the macOS PR lane selects (``-m platform_sensitive``);
+# the full suite still runs on macOS after merge and nightly (main-ci.yml).
+#
+# Kept here, as globs over file names, rather than as ``pytestmark`` lines
+# scattered through ~60 modules: the PR lane's coverage is then reviewable in
+# one place, and a new ``test_watcher_*`` or ``*_hook`` module joins it without
+# anyone remembering to. A single test elsewhere can opt in with an explicit
+# ``@pytest.mark.platform_sensitive``.
+_PLATFORM_SENSITIVE_MODULES = (
+    # Filesystem events: watchdog's FSEvents backend on macOS, inotify on Linux.
+    "test_watcher*.py",
+    # Hook scripts run as subprocesses: shell, env, HOME and argv handling.
+    "*hook*.py",
+    "test_subprocess_argv_form.py",
+    # Service definitions and the doctor checks that inspect them (launchd
+    # plists on macOS, systemd units on Linux).
+    "test_doctor_service_checks.py",
+    "test_docker_compose.py",
+    "test_deploy_*.py",
+    # Path handling: /var -> /private/var, case-insensitive APFS, symlinks,
+    # relative-path normalisation, worktree and memory-dir resolution.
+    "*path*.py",
+    "test_security_toctou_read.py",
+    "test_worktree_reconcile.py",
+    "test_setup_worktree.py",
+    "test_list_read.py",
+    "test_git_tools_write_cleanup.py",
+    "test_cli_init.py",
+    "test_mcp_config_*.py",
+    # Modules with explicit ``sys.platform`` / ``platform.system()`` branches.
+    "test_cli_mcp_smoke.py",
+    "test_doctor_consolidation_last_run.py",
+    "test_doctor_consolidation_schedule.py",
+    "test_doctor_memory_dir_writable.py",
+    "test_doctor_config_drift.py",
+)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Tag items from ``_PLATFORM_SENSITIVE_MODULES`` with ``platform_sensitive``."""
+    from fnmatch import fnmatch
+
+    marker = pytest.mark.platform_sensitive
+    for item in items:
+        name = item.path.name
+        if any(fnmatch(name, pattern) for pattern in _PLATFORM_SENSITIVE_MODULES):
+            item.add_marker(marker)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

@@ -29,6 +29,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m bench.relevance")
     parser.add_argument("--records", default=None, help="path to a corpus YAML")
     parser.add_argument("--questions", default=None, help="path to a question-set YAML")
+    parser.add_argument("--prompts", action="store_true", help="include synthetic prompt-shaped queries")
+    parser.add_argument("--shape-prompts", action="store_true", help="measure server prompt preparation")
     parser.add_argument("--top-k", type=int, default=harness.DEFAULT_TOP_K)
     parser.add_argument(
         "--thresholds",
@@ -64,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         fixture = corpus_mod.load_fixture(args.records, args.questions)
+        if args.prompts:
+            fixture = corpus_mod.with_prompts(fixture)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -93,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
             thresholds=args.thresholds,
             repeats=args.repeats,
             keep_store=args.keep_store,
+            shape_prompts=args.shape_prompts,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

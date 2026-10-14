@@ -39,6 +39,22 @@ cp settings.json .claude/settings.json   # or merge into an existing one
 Make sure `palinode-api` is running (default: `http://localhost:6340`). Override
 with `PALINODE_API_URL` if you run it on another host.
 
+## Upgrading
+
+Installed hooks do not update themselves when palinode does. After upgrading,
+run:
+
+```bash
+palinode hooks update --dry-run   # see the diff
+palinode hooks update             # refresh; old copies kept as <name>.bak-<timestamp>
+```
+
+It refreshes the palinode hooks registered in `~/.claude/settings.json` and in
+the current project's `.claude/settings*.json`, and leaves every other hook
+alone. Each script's second line, `# palinode-hook-version: X.Y.Z`, names the
+release in which it last changed. `palinode doctor` (check `hooks_current`)
+warns when an installed copy has drifted.
+
 ## Why `/clear` matters
 
 `/clear` in Claude Code resets the conversation context. Without a hook, every

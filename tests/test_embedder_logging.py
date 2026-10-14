@@ -49,7 +49,11 @@ def test_embedder_module_has_logger():
 # ---------------------------------------------------------------------------
 
 
-def test_embed_failure_raises_and_warns(caplog):
+def test_embed_failure_raises_and_warns(caplog, monkeypatch):
+    # The once-per-process keyword-only notice follows the failure warning
+    # unless an earlier test in this process already emitted it; mark it done
+    # so the result doesn't depend on test order.
+    monkeypatch.setattr(embedder, "_keyword_only_notice_done", True)
     with caplog.at_level(logging.WARNING, logger="palinode.core.embedder"):
         with patch("palinode.core.embedder._run_preflight_once"), \
                 _client_with_embed(embed_side_effect=OllamaUnreachable("offline", role="embed")):

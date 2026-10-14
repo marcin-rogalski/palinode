@@ -165,12 +165,14 @@ auto_summary:
   # llm_fallbacks:
   #   - model: "qwen-coder"                     # local vLLM (fast, on-LAN)
   #     url: "http://vllm-host:8000"
+  #     metered: false                          # free host: exempt from the cap below
   #   - model: "claude-sonnet-4-6"              # label only; shim sets SHIM_MODEL
   #     url: "http://127.0.0.1:4010"            # local Sonnet shim (last resort)
   # Per-/generate-summaries-run cap on how many deferred files may escalate to the
   # fallback chain, bounding egress (esp. to the Sonnet link) when the primary is
   # down and one backfill spans a large backlog. 0 = unlimited. Only applies with
-  # llm_fallbacks.
+  # llm_fallbacks, and only to entries that are metered (the default); an entry
+  # with `metered: false` never spends or is blocked by this budget.
   # llm_fallback_max_per_run: 10
 
 # -----------------------------------------------------------------------------

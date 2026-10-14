@@ -98,6 +98,19 @@ line deliberately names no way to see them: an agent told how fetches another
 project's decision and answers with it. The CLI, read by a person, adds
 `--include-other-projects to see them`. A full result carries no such line.
 
+Automatic per-turn recall delivers a confident bundle whose only news is that
+withheld count once per session, then suppresses it. Bundles with selected
+records, replacements, insufficiencies or conflicts (including omitted
+conflicts) are always delivered, with the withheld line when present. Explicit
+`/resolve`, MCP and CLI resolve, and search keep the notice on every request.
+The Claude Code hook keys a cache marker on the payload's `session_id`, under
+`${XDG_CACHE_HOME:-~/.cache}/palinode/isolation-notices`, pruning markers older
+than about seven days. Missing or invalid IDs (anything outside `A-Za-z0-9_-`),
+or cache read/write failures, keep the notice enabled. Pi uses
+`sessionManager.getSessionId()` and Cline uses `setup`'s `session.sessionId`;
+the shared plugin core keeps these markers in memory. If a harness supplies no
+session ID, the plugin process lifetime is treated as the session.
+
 **Linked worktrees.** An agent working in a linked git worktree
 (`.claude/worktrees/<task>`) has a directory named after the task. The shipped
 hooks (prompt and session start) and the plugin core send the repository's main
@@ -123,11 +136,11 @@ audiences, not one file everything reads:
   read `CLAUDE.md`.
 
 So in a project with both files, each block is live for one side and inert for
-the other. **Maintain both.** Editing one does not change the other, and
-re-running `palinode init` does not reconcile drift between them: it skips any
-instruction file that already carries a Palinode section, and `--force` appends
-a fresh block rather than replacing an edited one. To keep a single source of
-truth instead, keep the block in one file and have the other reference it —
+the other. **Maintain both.** Editing one does not change the other. A normal
+re-run of `palinode init` skips an instruction file that already carries a
+Palinode section; `--force` replaces each file's Palinode block independently.
+To keep a single source of truth instead, keep the block in one file and have
+the other reference it —
 Claude Code expands `@path` imports from a `CLAUDE.md`. `palinode init` prints
 this same note (in `--dry-run` too) whenever a run leaves both files in place.
 

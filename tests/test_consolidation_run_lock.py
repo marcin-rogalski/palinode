@@ -19,6 +19,7 @@ from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
 import palinode.consolidation.cron as cron
+import palinode.consolidation.activity_gate as activity_gate
 import palinode.consolidation.run_lock as run_lock
 import palinode.consolidation.runner as runner
 import palinode.mcp as mcp
@@ -275,6 +276,24 @@ def test_cron_logs_busy_detail_and_exits_nonzero(memory_dir, monkeypatch, caplog
 
     assert raised.value.code == 1
     assert "Consolidation is already running" in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["weekly", "nightly"])
+def test_cron_records_lock_refusal(memory_dir, monkeypatch, mode):
+    monkeypatch.setattr(config.consolidation, "enabled", True)
+    argv = ["palinode.consolidation.cron", "--ignore-gate"]
+    if mode == "nightly":
+        argv.append("--nightly")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with run_lock.consolidation_run_lock(memory_dir):
+        with pytest.raises(SystemExit, match="1"):
+            cron.main()
+
+    history = activity_gate.run_history(mode, memory_dir)
+    assert len(history) == 1
+    assert history[0]["status"] == "lock_refused"
+    assert "Consolidation is already running" in history[0]["error"]
 
 
 def test_lock_uses_gitignored_operational_directory(memory_dir):

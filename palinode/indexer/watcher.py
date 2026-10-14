@@ -20,6 +20,7 @@ import urllib.request
 
 from palinode.core import store, parser, embedder, cross_refs  # noqa: F401  (embedder re-exported for test patches)
 from palinode.core.config import config
+from palinode.core.log_files import LazyDirFileHandler
 from palinode.core.skip_dirs import is_skipped_path
 from palinode.indexer.index_file import index_file
 from palinode.indexer.watcher_identity import remove_identity, write_identity
@@ -60,8 +61,9 @@ sh = logging.StreamHandler()
 sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logger.addHandler(sh)
 
-os.makedirs(os.path.join(config.palinode_dir, "logs"), exist_ok=True)
-fh = logging.FileHandler(os.path.join(config.palinode_dir, config.logging.operations_log))
+# Directory and file are created on the first record, not at import (see
+# palinode.core.log_files).
+fh = LazyDirFileHandler(os.path.join(config.palinode_dir, config.logging.operations_log))
 fh.setFormatter(JsonlFormatter())
 logger.addHandler(fh)
 

@@ -225,7 +225,9 @@ and they must be handled by whoever does control them:
   context has already been read. Retiring or erasing it afterwards changes what will be
   supplied next time and nothing about the turn that already happened.
 - **Exports a recipient holds.** Anything read out through search, `read`, the UI, an
-  Obsidian vault sync or a copy-paste is a copy you no longer control.
+  Obsidian vault sync, a [handoff bundle](HANDOFF.md) or a copy-paste is a copy you no
+  longer control. Records imported from a bundle are the recipient's files: correcting
+  or erasing yours later doesn't reach them.
 - **Backups and clones you do not control.** The same limitation every distributed VCS
   deployment has. The mitigation is scoping (below), not tooling.
 

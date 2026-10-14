@@ -26,7 +26,8 @@ function stubFetch(routes: Record<string, unknown>, calls: Calls = []): typeof f
 const QUIET = { "/context/prime": {}, "/list": [], "/check-triggers": [], "/search": { results: [] } };
 const HIT = {
   ...QUIET,
-  "/search": { results: [{ rel_path: "decisions/rollback.md", raw_score: 0.7, snippet: "git revert + reindex" }] },
+  "/search": { results: [{ rel_path: "decisions/rollback.md", raw_score: 0.7, snippet: "git revert + reindex" }],
+    receipt: { retrieval: { confidence: "confident" } } },
 };
 
 let seq = 0;
@@ -66,6 +67,31 @@ describe("shape", () => {
 });
 
 describe("beforeModel — the prompt-cache invariant", () => {
+  it("keys isolation-only delivery on setup's session id and preserves the first injection on replay", async () => {
+    const routes = { ...QUIET, "/resolve": {
+      selected: [], conflicts: [], replaced: [], insufficient: [], omitted_conflicts: 0,
+      other_projects_withheld: 2, retrieval: { confidence: "confident" },
+      text: "2 records from other projects withheld (scope: project/alpha).",
+    } };
+    const p = make(routes);
+    p.setup!(undefined, { session: { sessionId: "cline-isolation-a" } });
+    const first = user(PROMPT);
+    const one = await p.hooks.beforeModel(request([first]));
+    expect(one?.messages).toHaveLength(2);
+    const replay = await p.hooks.beforeModel(request([first], { iteration: 2 }));
+    expect(replay).toEqual(one);
+    const second = user(PROMPT);
+    expect(await p.hooks.beforeModel(request([second]))).toBeUndefined();
+    const history = await p.hooks.beforeModel(request([first, second]));
+    expect(history?.messages).toEqual([one!.messages[0], one!.messages[1], second]);
+    const other = make(routes);
+    other.setup!(undefined, { session: { sessionId: "cline-isolation-b" } });
+    expect((await other.hooks.beforeModel(request([user(PROMPT)])))?.messages).toHaveLength(2);
+    const back = make(routes);
+    back.setup!(undefined, { session: { sessionId: "cline-isolation-a" } });
+    expect(await back.hooks.beforeModel(request([user(PROMPT)]))).toBeUndefined();
+  });
+
   it("injects recall as a message after the prompt — and NEVER touches the system prompt", async () => {
     const p = make(HIT);
     const prompt = user(PROMPT);
@@ -98,6 +124,7 @@ describe("beforeModel — the prompt-cache invariant", () => {
     const p = make({
       ...QUIET,
       "/search": {
+        receipt: { retrieval: { confidence: "confident" } },
         results: [
           {
             rel_path: "notes/keyword.md",

@@ -6,6 +6,7 @@ from palinode.core.config import config
 
 _cli_logger = logging.getLogger("palinode.config")
 from palinode.cli.aliases import aliases
+from palinode.cli.handoff import handoff
 from palinode.cli.prime import prime
 from palinode.cli.search import search
 from palinode.cli.save import save
@@ -33,6 +34,7 @@ from palinode.cli.ingest import ingest
 from palinode.cli.prompt import prompt
 from palinode.cli.migrate import migrate
 from palinode.cli.init import init
+from palinode.cli.hooks import hooks
 from palinode.cli.mcp_config import mcp_config
 from palinode.cli.embedding_tools import dedup_suggest, orphan_repair, cluster_neighbors, topic_coverage
 from palinode.cli.obsidian_sync import obsidian_sync
@@ -112,6 +114,7 @@ main.add_command(read)
 main.add_command(list_cmd, name="list")
 main.add_command(lint)
 main.add_command(aliases)
+main.add_command(handoff)
 main.add_command(resolve)
 main.add_command(review)
 main.add_command(corrections)
@@ -126,6 +129,7 @@ main.add_command(session_end)
 
 # Project scaffolding
 main.add_command(init)
+main.add_command(hooks)
 
 # Diagnostics
 main.add_command(mcp_config, name="mcp-config")

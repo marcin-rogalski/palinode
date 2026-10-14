@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "palinode"
-version = "0.22.0"
+version = "0.23.0"
 description = "Inspectable, correctable project memory in git-versioned Markdown for AI agents."
 authors = [
   {name = "Paul Kyle", email = "paul@phasespace.co"}
@@ -36,11 +36,6 @@ dependencies = [
     "fastapi>=0.115,<0.137",      # older: CSRF/ReDoS CVEs. Cap <0.137: 0.137.1 regressed include_router (routes not added to app → routeless API). 0.136.x is the last good line.
     "uvicorn>=0.32",              # 0.11.x had log-injection / response-splitting CVEs
     "pydantic>=2.7,<3.0",         # 1.x and pre-2.4 had ReDoS / infinity-loop CVEs
-    # Upper bound is load-bearing: mcp 2.0.0 (2026-07-28) removed both
-    # Server.list_tools and Server.call_tool, the decorators palinode/mcp.py is
-    # built on, so an uncapped range installs a server that cannot start.
-    # Lower bound: earlier versions carry DNS rebinding / FastMCP DoS /
-    # Streamable HTTP DoS CVEs. Lift the cap only with the 2.x migration.
     "mcp>=2,<3",              # 2.x server API. Upper bound is deliberate: 1.10 was
                               # declared unbounded and pip resolved it to a 2.0 that
                               # removed the decorators, breaking every fresh install.
@@ -79,6 +74,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "pytest-timeout",
+    "pytest-xdist",
     "ruff",
     "bandit"
 ]
@@ -121,7 +117,9 @@ testpaths = ["tests"]
 addopts = "--ignore=tests/live"
 pythonpath = ["."]
 markers = [
-    "slow: marks tests that need Ollama or take >5s",
+    "slow: marks tests that need Ollama or take >5s; deselected on PR CI, run post-merge and nightly",
+    "serial: shares a system-wide resource (e.g. fseventsd) that per-test isolation cannot separate; CI runs these in a non-parallel pass after the xdist one",
+    "platform_sensitive: host-OS-dependent tests (watcher, hooks, service files, paths); the macOS PR lane runs only these. Applied by module glob in tests/conftest.py",
     "doctor_real_search_roots: allow a test to exercise doctor's built-in filesystem root discovery",
 ]
 asyncio_mode = "strict"

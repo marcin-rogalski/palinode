@@ -268,6 +268,9 @@ def test_refusal_in_fresh_interpreter_exits_nonzero() -> None:
     env = {
         "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+        # The conftest's sandbox. Without it the fresh interpreter resolves
+        # ``~/palinode`` and logs its startup warning into the real store.
+        "PALINODE_DIR": os.environ["PALINODE_DIR"],
         "PALINODE_MCP_HTTP_HOST": "0.0.0.0",
     }
     for k in _GATE_ENV_VARS:

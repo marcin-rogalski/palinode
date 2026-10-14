@@ -23,10 +23,11 @@ What propagation does, and does not do:
 - **Idempotent per source.** A dependent already carrying an entry for a given
   source ref is not touched again, whatever else happens to that source, so a
   re-run of the same ops is a no-op and repeated retirements of one source do
-  not pile up entries. The flag clears when the dependent is re-saved: the save
-  path rebuilds frontmatter from its own inputs, so a re-save is precisely the
-  "I have re-verified this against its sources" action, and no new verb is
-  needed.
+  not pile up entries. The flag clears when the dependent is re-saved with a
+  new body (``replace`` or no policy): that save never carries
+  ``stale_backing`` forward, so a re-save is precisely the "I have re-verified
+  this against its sources" action, and no new verb is needed. An ``append``
+  keeps the flag, since adding a block re-verifies nothing.
 - **Archived dependents are skipped.** A ``status: archived`` memory asserts
   nothing in recall, so there is nothing to review. The gap that leaves — a
   source retired *while* its dependent was archived — is closed on the way

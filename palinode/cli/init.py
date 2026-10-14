@@ -115,6 +115,7 @@ CLAUDE_MD_BLOCK = (
 #: .cursor/rules/ (Cursor) receive: the same recall / save-with-rationale /
 #: session-end contract, none of the Claude-Code-only machinery.
 MEMORY_BLOCK_CORE = _MEMORY_BLOCK_TOP + _NEUTRAL_SESSION_END + _MEMORY_BLOCK_TAIL
+MEMORY_BLOCK_END = "<!-- palinode:memory:end -->\n"
 
 
 #: Disclosure printed when a run leaves BOTH a CLAUDE.md-family instruction
@@ -134,10 +135,9 @@ INSTRUCTION_FILE_DISCLOSURE = """\
       or CLAUDE.local.md exists in the working directory or above it.
     AGENTS.md          — read by Codex and other AGENTS.md-aware harnesses,
       which do not read CLAUDE.md.
-    Maintain both: editing one block does not change the other, and re-running
-      `palinode init` does not reconcile drift between them — it skips any file
-      that already has a Palinode section, and --force appends a fresh block
-      rather than replacing an edited one.
+    Maintain both: editing one block does not change the other. Without --force,
+      `palinode init` does not reconcile drift between them; with --force, it
+      replaces each file's Palinode block independently.
     Reference: https://code.claude.com/docs/en/memory#agents-md\
 """
 
@@ -176,6 +176,7 @@ failure. See the installed `/wrap` command/skill for the exact contract.
 
 HOOK_SCRIPT = """\
 #!/bin/bash
+# palinode-hook-version: 0.23.0
 # palinode-session-end.sh — Auto-capture Claude Code sessions to Palinode.
 #
 # Fires on SessionEnd (including /clear, logout, exit). Reads the transcript
@@ -279,22 +280,34 @@ if [ "$MSG_COUNT" -lt "$MIN_MESSAGES" ]; then
   exit 0
 fi
 
-# The first user turn is a *topic hint*, not content — and in Claude Code it is
+# The first human ask is a *topic hint*, not content — and in Claude Code it is
 # routinely wrapped in harness markup (slash-command expansion, system
 # reminders, bash/IDE blocks). Left in, that markup is embedded and indexed as
 # though it were what the session was about. Strip it here, at the
 # source: wrapper blocks whose body is machinery lose the whole block; the
-# command-name tags lose only the tags, keeping the human-meaningful text. A
-# `type` guard keeps gsub safe when `content` is a block array rather than a
-# string, and `|| echo ""` keeps a jq failure from tripping `set -e`.
+# command-name tags lose only the tags, keeping the human-meaningful text.
+#
+# The topic is the first user turn that still has human text after stripping,
+# not blindly the first user turn: after /clear the transcript opens with a
+# harness-generated (`isMeta`) <local-command-caveat> turn, then the bare
+# `/clear` invocation, and only then the real ask. So: skip `isMeta`
+# turns, drop the caveat block whole, treat a command invocation with empty
+# args as no text, read only `text` blocks from block-array content (a
+# tool_result turn has no human text), and take the first non-empty result.
+# `|| echo ""` keeps a jq failure from tripping `set -e`.
 FIRST_PROMPT=$(jq -r -s '
-    map(select(.type == "user") | .message.content // empty) | .[0] // ""
-    | if type == "string" then . else tojson end
-    | gsub("<system-reminder>.*?</system-reminder>"; ""; "s")
-    | gsub("<local-command-std(out|err)>.*?</local-command-std(out|err)>"; ""; "s")
-    | gsub("<bash-(input|stdout|stderr)>.*?</bash-(input|stdout|stderr)>"; ""; "s")
-    | gsub("</?(command-message|command-name|command-args|user-prompt-submit-hook|ide_selection|ide_opened_file)>"; " ")
-    | gsub("\\\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")' \\
+    [ .[] | select(.type == "user" and .isMeta != true) | .message.content // empty
+      | if type == "string" then .
+        elif type == "array" then [ .[] | select(type == "object" and .type == "text") | .text // "" ] | join(" ")
+        else tojson end
+      | gsub("<local-command-caveat>.*?</local-command-caveat>"; ""; "s")
+      | gsub("<system-reminder>.*?</system-reminder>"; ""; "s")
+      | gsub("<local-command-std(out|err)>.*?</local-command-std(out|err)>"; ""; "s")
+      | gsub("<bash-(input|stdout|stderr)>.*?</bash-(input|stdout|stderr)>"; ""; "s")
+      | if test("<command-name>") and (gsub("<command-(name|message)>[^<]*</command-(name|message)>|<command-args>\\\\s*</command-args>"; "") | test("^\\\\s*$")) then "" else . end
+      | gsub("</?(command-message|command-name|command-args|user-prompt-submit-hook|ide_selection|ide_opened_file)>"; " ")
+      | gsub("\\\\s+"; " ") | sub("^ +"; "") | sub(" +$"; "")
+      | select(length > 0) ] | .[0] // ""' \\
   "$TRANSCRIPT_PATH" 2>/dev/null | cut -c1-200 || echo "")
 
 SUMMARY="Auto-captured (${SOURCE_REASON}, ${MSG_COUNT} messages). Topic: ${FIRST_PROMPT}"
@@ -337,6 +350,7 @@ exit 0
 
 SESSION_START_HOOK_SCRIPT = """\
 #!/bin/bash
+# palinode-hook-version: 0.23.0
 # palinode-session-start.sh — warm + inject Palinode context on session start.
 #
 # Fires on Claude Code SessionStart (startup and /clear by default). Two
@@ -509,6 +523,7 @@ exit 0
 
 USER_PROMPT_SUBMIT_HOOK_SCRIPT = """\
 #!/usr/bin/env bash
+# palinode-hook-version: 0.23.0
 # palinode-user-prompt-submit.sh — per-turn implicit recall.
 #
 # Fires on every UserPromptSubmit, BEFORE the model sees the prompt. Two
@@ -527,13 +542,20 @@ USER_PROMPT_SUBMIT_HOOK_SCRIPT = """\
 #      replaced or contradicted by a record nobody checked. Deliberately
 #      conservative defaults: this runs every prompt, and injected bytes live
 #      in the conversation for the rest of the session.
+#      A confident bundle whose only news is other-project withholding is
+#      delivered once per session_id, then suppressed. Content-bearing bundles
+#      retain the withheld line every time; explicit recall is unchanged.
+#      One marker per session lives in ${XDG_CACHE_HOME:-~/.cache}/palinode/
+#      isolation-notices; invalid/missing IDs or cache failures keep delivery
+#      enabled. Markers older than about seven days are pruned opportunistically.
 #
 # Routing — three ways memory reaches a session, and they stay separate:
 #
 #   session start  ordinary priming (palinode-session-start.sh): the core
 #                  digest, under that hook's own timeout. No resolution — a
 #                  startup digest is orientation, not an answer.
-#   per turn       this hook: bounded resolution under a 250 ms deadline
+#   per turn       this hook: bounded resolution under a 250 ms loopback /
+#                  1000 ms remote deadline
 #                  (PALINODE_HOOK_RESOLVE_DEADLINE), falling back to plain
 #                  search with an explicit marker.
 #   explicit       palinode_resolve / palinode_search / palinode_read as MCP
@@ -563,7 +585,10 @@ USER_PROMPT_SUBMIT_HOOK_SCRIPT = """\
 #   PALINODE_HOOK_RESOLVE              1/0 — bounded resolution on/off (default 1;
 #                                      0 = the pre-resolution search channel, no marker)
 #   PALINODE_HOOK_RESOLVE_DEADLINE     per-turn resolution deadline in MILLISECONDS
-#                                      (default 250). A latency budget spent on every
+#                                      (default 250 loopback, 1000 remote). Remote
+#                                      resolve measured 260–340 ms; 1000 ms leaves
+#                                      margin for the network round trip.
+#                                      A latency budget spent on every
 #                                      prompt, not a failure timeout — past it the turn
 #                                      falls back to search rather than waiting.
 #   PALINODE_PROJECT                   this session's project slug (optional). Sent
@@ -597,7 +622,20 @@ TRIGGERS_ON="${PALINODE_HOOK_RECALL_TRIGGERS:-1}"
 MIN_CHARS="${PALINODE_HOOK_RECALL_MIN_CHARS:-12}"
 MAX_CHARS="${PALINODE_HOOK_RECALL_MAX_CHARS:-3000}"
 RESOLVE_ON="${PALINODE_HOOK_RESOLVE:-1}"
-RESOLVE_DEADLINE_MS="${PALINODE_HOOK_RESOLVE_DEADLINE:-250}"
+API_AUTHORITY="${PALINODE_API#*://}"
+API_AUTHORITY="${API_AUTHORITY%%/*}"
+API_AUTHORITY="${API_AUTHORITY##*@}"
+API_AUTHORITY="$(printf '%s' "$API_AUTHORITY" | tr '[:upper:]' '[:lower:]')"
+RESOLVE_DEFAULT_MS=1000
+case "$API_AUTHORITY" in
+  localhost|localhost:*|\\[::1\\]|\\[::1\\]:*) RESOLVE_DEFAULT_MS=250 ;;
+  *)
+    API_HOST="${API_AUTHORITY%%:*}"
+    if [[ "$API_HOST" =~ ^127\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$ ]]; then
+      RESOLVE_DEFAULT_MS=250
+    fi ;;
+esac
+RESOLVE_DEADLINE_MS="${PALINODE_HOOK_RESOLVE_DEADLINE:-$RESOLVE_DEFAULT_MS}"
 # Per-fired-trigger content cap and max fired triggers injected per prompt.
 TRIGGER_READ_CHARS=1200
 TRIGGER_MAX_FIRED=2
@@ -685,6 +723,33 @@ trim_to_boundary() {
     end' 2>/dev/null
 }
 
+# Return success only when this session already received isolation-only news.
+# Cache trouble leaves the existing delivery behaviour intact. Mark only at
+# the output boundary, after trimming and the final controls check.
+ISOLATION_MARKER=""
+isolation_notice_seen() {
+  local session_id cache marker seen
+  session_id=$(echo "$INPUT" | jq -r '
+    .session_id | if type == "string" then
+      select(length > 0 and (test("[^A-Za-z0-9_-]") | not))
+    else empty end' 2>/dev/null) || return 1
+  [ -n "$session_id" ] || return 1
+  cache="${XDG_CACHE_HOME:-${HOME:-}/.cache}/palinode/isolation-notices"
+  [ -n "${XDG_CACHE_HOME:-${HOME:-}}" ] || return 1
+  mkdir -p "$cache" 2>/dev/null || return 1
+  [ -r "$cache" ] && [ -w "$cache" ] && [ -x "$cache" ] || return 1
+  find "$cache" -type f -name '*.seen' -mtime +7 -exec rm -f {} + 2>/dev/null || :
+  marker="$cache/$session_id.seen"
+  [ ! -L "$marker" ] || return 1
+  if [ -e "$marker" ]; then
+    [ -f "$marker" ] && [ -r "$marker" ] && [ -w "$marker" ] || return 1
+    IFS= read -r seen 2>/dev/null < "$marker" || return 1
+    [ "$seen" != "delivered" ] || return 0
+  fi
+  ISOLATION_MARKER="$marker"
+  return 1
+}
+
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
 # A linked git worktree (an agent's .claude/worktrees/<task>) is named after
@@ -742,7 +807,7 @@ if [ "${PALINODE_HOOK_DRYRUN:-0}" = "1" ]; then
   exit 0
 fi
 
-QUERY_PAYLOAD=$(jq -n --arg q "$PROMPT" '{query: $q}')
+QUERY_PAYLOAD=$(jq -n --arg q "$PROMPT" --argjson scope "$CLIENT_SCOPE" '{query: $q} + $scope')
 
 SECTIONS=""
 
@@ -763,6 +828,8 @@ if [ "$TRIGGERS_ON" = "1" ]; then
       BODY=$(curl -s -f -G \\
         ${AUTH[@]+"${AUTH[@]}"} \\
         --data-urlencode "file_path=$f" \\
+        --data-urlencode "project=$CLIENT_RESOLVED_PROJECT" \\
+        --data-urlencode "automatic=true" \\
         "${PALINODE_API}/read" \\
         --connect-timeout 1 \\
         --max-time "${HOOK_TIMEOUT}" 2>/dev/null \\
@@ -787,7 +854,8 @@ search_section() {
   SEARCH_PAYLOAD=$(jq -n --arg q "$PROMPT" \\
     --argjson limit "$MAX_RESULTS" --argjson thr "$THRESHOLD" \\
     --arg project "$CLIENT_RESOLVED_PROJECT" \\
-    '{query: $q, limit: $limit, threshold: $thr, max_chars: 300}
+    '{query: $q, prompt: true, receipt: true, automatic: true, mode: "passive",
+       limit: $limit, threshold: $thr, max_chars: 300}
      + (if $project != "" then {context: ["project/" + $project]} else {} end)')
   HITS=$(curl -s -f \\
     -X POST "${PALINODE_API}/search" \\
@@ -798,10 +866,11 @@ search_section() {
     --max-time "${HOOK_TIMEOUT}" 2>/dev/null) || HITS=""
 
   if [ -n "$HITS" ]; then
-    # The API returns a bare array; `{results: [...]}` is accepted for
-    # forward-compat. The type check must come FIRST: `.results` on an array
-    # is a hard jq ERROR (not null), so `.results // .` dies on the real
-    # response shape and fail-open turns the crash into permanent silence.
+    # Automatic delivery requires positive evidence, including on the fallback.
+    # Older servers without a verdict are silent until upgraded.
+    [ "$(echo "$HITS" | jq -r 'if type == "object" then .receipt.retrieval.confidence // empty else empty end' 2>/dev/null)" = "confident" ] || return 0
+    # The receipt-capable response carries rows under results. Keep the type
+    # check first: looking up .results on a bare array is a jq error.
     LINES=$(echo "$HITS" | jq -r '
       def fmt2: (. * 100 | round) as $c
         | (($c / 100) | floor | tostring) + "." + ((($c % 100) + 100 | tostring)[1:]);
@@ -842,7 +911,7 @@ if [ "$MAX_RESULTS" -gt 0 ] \\
   if [ "$RESOLVE_ON" = "1" ]; then
     RESOLVE_PAYLOAD=$(jq -n --arg q "$PROMPT" --argjson scope "$CLIENT_SCOPE" \\
       --argjson items "$MAX_RESULTS" --argjson chars "$RESOLVE_BUDGET" \\
-      '{query: $q} + $scope + {max_items: $items, max_chars: $chars}')
+      '{query: $q, prompt: true} + $scope + {max_items: $items, max_chars: $chars}')
     # curl takes seconds; the knob is milliseconds, like the plugin's.
     DEADLINE=$(jq -n --argjson ms "$RESOLVE_DEADLINE_MS" '$ms / 1000')
     BUNDLE=$(curl -s -f \\
@@ -856,14 +925,29 @@ if [ "$MAX_RESULTS" -gt 0 ] \\
       RESOLVE_OK=1
       # An omitted conflict counts: budget pressure dropped a contested group
       # from the body, and the bundle names it by ref precisely so silence
-      # cannot make it look settled.
+      # cannot make it look settled. The withheld count alone is news only
+      # when nothing here answered: an empty selection the budget refused
+      # had answers that did not fit, and stays silent.
       RESOLVED=$(echo "$BUNDLE" | jq -r '
         if type != "object" then empty
+        elif (.retrieval.confidence // .receipt.retrieval.confidence // "") != "confident" then empty
         elif (((.selected // []) | length) + ((.conflicts // []) | length)
               + ((.replaced // []) | length) + ((.insufficient // []) | length)
               + (.omitted_conflicts // 0)
-              + (.other_projects_withheld // 0)) > 0 then (.text // empty)
+              + (if ((.retrieval // .receipt.retrieval // {}).selection.reasons // [])
+                    | any(. == "budget_exhausted:chars" or . == "budget_exhausted:tokens"
+                          or . == "budget_exhausted:items")
+                 then 0 else (.other_projects_withheld // 0) end)) > 0 then (.text // empty)
         else empty end' 2>/dev/null) || RESOLVED=""
+      if [ -n "$RESOLVED" ] && echo "$BUNDLE" | jq -e '
+        (((.selected // []) | length) + ((.conflicts // []) | length)
+          + ((.replaced // []) | length) + ((.insufficient // []) | length)
+          + (.omitted_conflicts // 0)) == 0
+        and (.other_projects_withheld // 0) > 0' >/dev/null 2>&1; then
+        if isolation_notice_seen; then
+          RESOLVED=""
+        fi
+      fi
     fi
   fi
 
@@ -924,8 +1008,12 @@ FINAL_CONTROL=$(curl -sS -f \\
   --max-time "${HOOK_TIMEOUT}" 2>/dev/null) || exit 0
 [ "$(echo "$FINAL_CONTROL" | jq -r 'if .allowed == true then "yes" else "no" end' 2>/dev/null)" = "yes" ] || exit 0
 
-jq -n --arg ctx "$CONTEXT" \\
-  '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}'
+OUTPUT=$(jq -n --arg ctx "$CONTEXT" \\
+  '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $ctx}}') || exit 0
+if [ -n "$ISOLATION_MARKER" ] && [[ "$CONTEXT" == *"$RESOLVED"* ]]; then
+  { printf 'delivered\\n' > "$ISOLATION_MARKER"; } 2>/dev/null || :
+fi
+printf '%s\\n' "$OUTPUT"
 
 exit 0
 """
@@ -1196,21 +1284,102 @@ def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _write_memory_block(path: Path, block: str, force: bool) -> str:
-    """Create-or-append a rendered memory block with marker idempotency.
+_MEMORY_HEADING = re.compile(r"(?m)^#{1,2} Memory \(Palinode\)[ \t]*(?:\r?\n|$)")
+_LEGACY_END = "`palinode_save` and `palinode_session_end` so status rolls up correctly."
+_LEGACY_HEAVY_END = "failure. See the installed `/wrap` command/skill for the exact contract."
 
-    The shared write idiom for every instruction-file surface (CLAUDE.md,
-    AGENTS.md, .cursor/rules): create the file with the block if absent; if
-    ``has_memory_block()`` already finds a section, skip unless forced;
-    otherwise append — never clobber a user's existing file content.
-    """
+
+def _memory_block_spans(content: str, path: Path) -> list[tuple[int, int]]:
+    """Find complete generated blocks; refuse an edited legacy tail."""
+    starts = list(_MEMORY_HEADING.finditer(content))
+    headings = list(re.finditer(r"(?m)^#{1,2} Memory \(Palinode\)", content))
+    if len(starts) != len(headings):
+        raise click.ClickException(
+            f"Cannot determine the Palinode block boundaries in {path}. "
+            "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+        )
+    spans = []
+    for index, start in enumerate(starts):
+        limit = starts[index + 1].start() if index + 1 < len(starts) else len(content)
+        closes = list(re.finditer(r"(?m)^<!-- palinode:memory:end -->\r?\n?", content[start.end():limit]))
+        if len(closes) > 1:
+            raise click.ClickException(
+                f"Cannot determine the end of the Palinode block in {path}. "
+                "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+            )
+        if closes:
+            end = start.end() + closes[0].end()
+        else:
+            tail = content[start.end():limit]
+            footers = list(re.finditer(r"(?m)^" + re.escape(_LEGACY_END) + r"\r?\n?", tail))
+            if len(footers) != 1 or not re.search(r"(?m)^### Project slug[ \t]*\r?$", tail[:footers[0].start()]):
+                raise click.ClickException(
+                    f"Cannot determine the end of the Palinode block in {path}. "
+                    "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+                )
+            end = start.end() + footers[0].end()
+            remainder = content[end:limit]
+            if re.search(r"(?m)^### (?!Wrap policy[ \t]*\r?$)", remainder):
+                raise click.ClickException(
+                    f"Cannot determine the end of the Palinode block in {path}. "
+                    "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+                )
+            if re.search(r"(?m)^### Wrap policy[ \t]*\r?$", remainder):
+                heavy = re.search(re.escape(_LEGACY_HEAVY_END) + r"\r?\n?", remainder)
+                if heavy is None:
+                    raise click.ClickException(
+                        f"Cannot determine the end of the Palinode block in {path}. "
+                        "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+                    )
+                end += heavy.end()
+        if re.search(r"(?m)^#{1,2} ", content[start.end():end]):
+            raise click.ClickException(
+                f"Cannot determine the end of the Palinode block in {path}. "
+                "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+            )
+        spans.append((start.start(), end))
+    return spans
+
+
+def _memory_block_action(path: Path, force: bool) -> str:
+    if not path.exists():
+        return "would create"
+    existing = path.read_bytes().decode("utf-8")
+    if has_memory_block(existing):
+        if force:
+            if not _memory_block_spans(existing, path):
+                raise click.ClickException(
+                    f"Cannot determine the Palinode block in {path}. "
+                    "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+                )
+            return "would replace"
+        return "would skip"
+    return "would append"
+
+
+def _write_memory_block(path: Path, block: str, force: bool) -> str:
+    """Create, append, or replace a complete Palinode instruction block."""
+    block += MEMORY_BLOCK_END
     _ensure_parent(path)
     if not path.exists():
         path.write_text(block, encoding="utf-8")
         return "created"
-    existing = path.read_text(encoding="utf-8")
+    existing = path.read_bytes().decode("utf-8")
     if has_memory_block(existing) and not force:
         return "skipped (already has Palinode section)"
+    if has_memory_block(existing):
+        spans = _memory_block_spans(existing, path)
+        if not spans:
+            raise click.ClickException(
+                f"Cannot determine the Palinode block in {path}. "
+                "Edit the file by hand: remove the incomplete block, then re-run palinode init."
+            )
+        updated = existing[:spans[0][0]] + block
+        for (_, end), (next_start, _) in zip(spans, spans[1:], strict=False):
+            updated += existing[end:next_start]
+        updated += existing[spans[-1][1]:]
+        path.write_bytes(updated.encode("utf-8"))
+        return "replaced" if len(spans) == 1 else f"replaced ({len(spans)} blocks collapsed)"
     with path.open("a", encoding="utf-8") as f:
         if not existing.endswith("\n"):
             f.write("\n")
@@ -1248,7 +1417,15 @@ def _write_hook_script(path: Path, force: bool, content: str = HOOK_SCRIPT) -> s
     # chmod +x
     mode = path.stat().st_mode
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return "created"
+    # Record what was installed: the version stamp and content hash are what
+    # `palinode doctor` (hooks_current) and `palinode hooks update` compare
+    # against later, once this copy has had a chance to go stale.
+    from palinode.cli.hooks import content_sha256, describe_version, hook_version
+
+    return (
+        f"created (hook version {describe_version(hook_version(content))}, "
+        f"sha256 {content_sha256(content)[:12]})"
+    )
 
 
 def _merge_settings(path: Path, force: bool) -> str:
@@ -1835,17 +2012,20 @@ def build_plan(target: Path, opts: InitOptions) -> list[PlannedWrite]:
 
     if opts.claudemd:
         plan.append(PlannedWrite(
-            "CLAUDE.md", claude_md, "memory instructions",
+            "CLAUDE.md", claude_md,
+            f"memory instructions — {_memory_block_action(claude_md, opts.force)}",
             lambda: _write_claude_md(claude_md, opts.slug, opts.force, opts.wrap_policy),
         ))
     if opts.agents:
         plan.append(PlannedWrite(
-            "AGENTS.md", agents_md, "memory instructions — Antigravity/Codex",
+            "AGENTS.md", agents_md,
+            f"memory instructions — Antigravity/Codex; {_memory_block_action(agents_md, opts.force)}",
             lambda: _write_agents_md(agents_md, opts.slug, opts.force),
         ))
     if opts.cursor:
         plan.append(PlannedWrite(
-            ".cursor/rules/palinode.md", cursor_rules, "memory instructions — Cursor rules",
+            ".cursor/rules/palinode.md", cursor_rules,
+            f"memory instructions — Cursor rules; {_memory_block_action(cursor_rules, opts.force)}",
             lambda: _write_cursor_rules(cursor_rules, opts.slug, opts.force),
         ))
     if opts.hook:
@@ -2095,7 +2275,7 @@ def _display_path(path: Path, target: Path) -> str:
 @click.option(
     "--force",
     is_flag=True,
-    help="Overwrite existing files (default: preserve / append / skip)",
+    help="Overwrite existing files; replace Palinode blocks in instruction files (default: preserve / append / skip)",
 )
 @click.option(
     "--dry-run",
@@ -2153,7 +2333,8 @@ def init(
       _index.md                — starter MOC linking all category dirs
       _README.md               — vault orientation for first-time openers
 
-    Re-run with --force to overwrite. --dry-run shows the plan without writing.
+    Re-run with --force to overwrite files or replace instruction-file Palinode
+    blocks in place. --dry-run shows the plan without writing.
     --force-obsidian overwrites the Obsidian scaffold only (preserving workspace.json).
     """
     target = Path(target_dir).resolve()
@@ -2283,7 +2464,7 @@ def init(
 
     for pw in plan:
         status = pw.writer()
-        mark = "✓" if status in ("created", "appended", "merged") else "·"
+        mark = "✓" if status.startswith(("created", "appended", "merged", "replaced")) else "·"
         click.echo(f"  {mark} {pw.label}: {status}")
 
     click.echo("")

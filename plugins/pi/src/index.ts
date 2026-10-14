@@ -84,9 +84,11 @@ export default function palinode(pi: PiLike): void {
     }
   });
 
-  pi.on("before_agent_start", async (event, _ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     if (!await automaticAllowed(cfg, "recall", process.cwd())) return;
-    const context = await buildRecallContext(event.prompt ?? "", cfg, fetch, process.cwd());
+    const context = await buildRecallContext(
+      event.prompt ?? "", cfg, fetch, process.cwd(), ctx.sessionManager?.getSessionId?.() ?? "",
+    );
     if (!context || !await automaticAllowed(cfg, "recall", process.cwd())) return undefined; // silence is the common case
     return {
       message: {

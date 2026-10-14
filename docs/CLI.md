@@ -843,6 +843,83 @@ palinode forget-withdraw people/me-forget-request.md --reason "asked in error"
 
 Output: **auto**.
 
+### `palinode handoff`
+
+```
+palinode handoff [OPTIONS] COMMAND [ARGS]...
+```
+
+Pass selected project memory to another store as one reviewable JSON file. The
+sender previews exactly what would leave before anything is written, and the
+recipient previews exactly what would be written before importing. See
+[HANDOFF.md](HANDOFF.md) for what is selected, what never leaves, what an
+import can't do, and what a bundle can't do once it's copied.
+
+There is no MCP tool for this command, by design: what leaves a store, and
+what enters it, is a person's decision, not an agent's.
+
+#### `palinode handoff export`
+
+```
+palinode handoff export [OPTIONS]
+```
+
+Without `--out` this previews only. It lists every record that would leave
+(selected or dependency, current or retired), the fields that won't be sent,
+quotes of other records, text addressed to AI agents, the records left out and
+why, the links a recipient can't follow, and a digest. Pass that digest with
+`--expect` and a path with `--out` to write the bundle. The write is refused if
+anything in the selection changed since the preview, and it never overwrites an
+existing file.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--project TEXT` | required | Project slug the records are tagged to |
+| `--type TEXT` | `Decision`, `Insight` | Memory type to select (repeatable) |
+| `--path TEXT` | — | Export exactly this record instead of the default selection (repeatable) |
+| `--include TEXT` | — | Carry this dependency even though the default rules leave it out (repeatable) |
+| `--since TEXT` | — | Only records updated on or after this ISO date |
+| `--out FILE` | — | Write the bundle here; needs `--expect` |
+| `--expect TEXT` | — | The digest from the preview you reviewed |
+| `--format [json\|text]` | auto | Output format |
+
+```bash
+palinode handoff export --project harbor
+palinode handoff export --project harbor --out harbor.handoff.json --expect 3f2a…
+```
+
+Output: **auto**.
+
+#### `palinode handoff import`
+
+```
+palinode handoff import [OPTIONS] FILE
+```
+
+Without `--apply` this previews only. For each record it shows where the record
+would land (`+`), whether it's already in your store from an earlier import
+(`=`), or why it's rejected (`x`). It also shows fields the bundle carried that
+are ignored, text addressed to AI agents, what the sender left out, links that
+point at nothing in your store, and a digest. Pass that digest with `--expect`
+and add `--apply` to write the records. The write is refused if the bundle or
+your store changed since the preview. Nothing in your store is overwritten or
+edited: a record whose path is taken lands renamed with a `-handoff-<id>`
+suffix.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--project TEXT` | the sender's | Your project for the records. Required when your store doesn't have the sender's project |
+| `--apply` | off | Write the previewed records; needs `--expect` |
+| `--expect TEXT` | — | The digest from the preview you reviewed |
+| `--format [json\|text]` | auto | Output format |
+
+```bash
+palinode handoff import harbor.handoff.json --project harbor
+palinode handoff import harbor.handoff.json --project harbor --apply --expect 9c41…
+```
+
+Output: **auto**.
+
 ### `palinode history`
 
 ```
@@ -862,6 +939,57 @@ palinode history projects/checkout-status.md --limit 5 --detail full
 ```
 
 Output: **auto** (no `--format` option; JSON when piped, text on a TTY).
+
+### `palinode hooks`
+
+```
+palinode hooks COMMAND
+```
+
+Manage the palinode hook scripts Claude Code runs on this machine. `palinode
+init --hook` copies them once and never revisits them, so a release that fixes
+a hook reaches an existing install only through `palinode hooks update`.
+`palinode doctor`'s `hooks_current` check reports when one has fallen behind.
+
+#### `palinode hooks update`
+
+```
+palinode hooks update [OPTIONS]
+```
+
+Find every palinode hook registered in the Claude Code settings cascade
+(`~/.claude/settings.json`, `.claude/settings.json`, `.claude/settings.local.json`)
+and replace each copy that differs from the one this release ships. The old copy
+is kept beside it as `<name>.bak-<YYYYMMDD-HHMMSS>`. A hook that is registered
+but missing gets installed. When everything is current, a re-run writes nothing.
+
+A hook counts as palinode's only when its script is named like one `init`
+writes (`palinode-session-start.sh`, `palinode-session-end.sh`,
+`palinode-user-prompt-submit.sh`) and reads like palinode's. Other hooks, and the
+settings files, are never written. A symlinked hook is reported but not
+rewritten: refresh the file it points to.
+
+Each packaged hook carries a `# palinode-hook-version: X.Y.Z` stamp on its
+second line, naming the release in which it last changed. The output shows
+installed → packaged versions. Copies from before the stamp existed show as
+`unstamped`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--dry-run` | off | Show what would change, with a unified diff, and write nothing |
+| `--project-dir PATH` | current directory | Project whose `.claude/settings*.json` to read |
+| `--format [text\|json]` | auto | Output format |
+
+```bash
+palinode hooks update --dry-run
+palinode hooks update
+```
+
+CLI-only. Hooks live on the machine running the agent harness, which is often
+not the machine running the palinode server. An MCP tool or REST endpoint would
+inspect the server's disk.
+
+Output: **auto**.
 
 ### `palinode import`
 
@@ -951,7 +1079,9 @@ Scaffold Palinode into a project: `.claude/CLAUDE.md` memory instructions,
 UserPromptSubmit hook scripts, `.mcp.json`, the `palinode-session` skill, and
 — when the harness footprint is detected — an `AGENTS.md` block and
 `.cursor/rules/palinode.md`. Works without the API. Idempotent: existing files
-are preserved or appended to unless `--force`. The README's "Daily use" section
+are preserved or appended to unless `--force`, which replaces the Palinode
+block in each instruction file in place. Complete duplicate blocks are collapsed;
+an incomplete block must be repaired by hand. The README's "Daily use" section
 and [HARNESSES.md](HARNESSES.md) explain what each harness gets;
 [OBSIDIAN.md](OBSIDIAN.md) covers `--obsidian`.
 
@@ -982,7 +1112,7 @@ current.
 | `--obsidian / --no-obsidian` | off | Also scaffold an Obsidian vault config (`.obsidian/`, `_index.md`, `_README.md`) |
 | `--force-obsidian` | off | Overwrite the Obsidian scaffold (except `workspace.json`); implies `--obsidian` |
 | `--prompts / --no-prompts` | on | Provision `$PALINODE_DIR/specs/prompts/*.md` from the packaged prompts (never overwrites) |
-| `--force` | off | Overwrite existing files |
+| `--force` | off | Overwrite existing files; replace Palinode blocks in instruction files |
 | `--dry-run` | off | Print the plan without writing |
 
 ```bash
@@ -1708,7 +1838,7 @@ README; the frontmatter fields are explained in
 | `--claim TEXT::REF::QUOTE` | none | Claim-level source anchor; read back with `blame --claims`; repeatable |
 | `--contradicts REF` | none | Typed conflict link, surfaced by `lint`; repeatable |
 | `--backed-by REF` | none | Typed evidence link; repeatable |
-| `--update-policy [append\|replace]` | unset | How a re-save to the same slug is written: `append` keeps the existing body and adds beneath it, `replace` overwrites it and marks a living document. Unset overwrites without marking |
+| `--update-policy [append\|replace]` | unset | How a re-save to the same slug is written: `append` keeps the existing body and adds beneath it; `replace` replaces the body, keeps record frontmatter except metadata bound to the old body, and marks a living document. Unset replaces the body with the same frontmatter rule, without marking |
 | `--epistemic [fact\|inference\|open_question\|unverified]` | unset | Kind of claim the memory makes |
 | `--sync / --no-sync` | async | Run the write-time contradiction check inline and report it |
 | `--format [json\|text]` | auto | Output format |

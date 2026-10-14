@@ -201,7 +201,7 @@ class TestOrderingAndFloorsAreUntouched:
         query = "ledger rollout ticket retention audit trail"
         new = store.search_hybrid(query, _vec(0), top_k=5, threshold=0.4,
                                   record_access=False)
-        monkeypatch.setattr(store, "bm25_query_scale", lambda db, units: 25.0)
+        monkeypatch.setattr(store, "bm25_query_scale", lambda db, units, **_: 25.0)
         old = store.search_hybrid(query, _vec(0), top_k=5, threshold=0.4,
                                   record_access=False)
         assert [hit["id"] for hit in new] == [hit["id"] for hit in old]

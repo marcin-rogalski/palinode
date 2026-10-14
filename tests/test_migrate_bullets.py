@@ -42,6 +42,7 @@ def test_empty_file_is_a_clean_noop(tmp_path: Path) -> None:
         "sections_found": 0,
         "files_created": [],
         "files_skipped": [],
+        "files_renamed": [],
         "log_file": None,
         "dry_run": True,
     }

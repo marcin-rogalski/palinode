@@ -43,11 +43,31 @@ pytestmark = pytest.mark.skipif(
     reason="the hook needs curl and jq on PATH",
 )
 
+
+@pytest.mark.parametrize("minimal", [False, True])
+def test_hook_delivers_bounded_or_minimal_assertion(mem, live_api, minimal):
+    if minimal:
+        scenarios.seed_minimal(mem)
+    else:
+        scenarios.seed_bounded(mem)
+    context = _run_hook(mem, live_api, "watermark bounded nightly windows",
+                        PALINODE_PROJECT="demo", PALINODE_HOOK_RECALL_MAX_CHARS="2000")
+    assert "decisions/window" in context
+    assert "more unlinked: palinode search" in context
+    assert context.count("also found (unlinked)") == (0 if minimal else 3)
+    if minimal:
+        assert "demoted" in context and "[trimmed]" in context
+
 # The hook's own default is 250 ms — a latency budget for a real deployment,
 # not an assertion about how fast this machine is. These tests pin the payload,
 # so they give resolution room; the exhaustion test below pins the deadline
 # itself by making it impossible to meet.
 _GENEROUS_DEADLINE_MS = "10000"
+# Same reasoning for the hook's per-curl ceiling (default 4 s). The hook exits
+# silently when a curl times out, so on a loaded machine — a parallel run, a
+# slow CI runner — a cold first request to the in-process server reads as "the
+# hook delivered nothing" rather than as a timeout.
+_GENEROUS_CURL_TIMEOUT_S = "30"
 
 
 @pytest.fixture()
@@ -87,6 +107,7 @@ def _run_hook(tmp_path, api_url: str, prompt: str, **env) -> str:
         "HOME": str(tmp_path),
         "PALINODE_API_URL": api_url,
         "PALINODE_HOOK_RESOLVE_DEADLINE": _GENEROUS_DEADLINE_MS,
+        "PALINODE_HOOK_RECALL_TIMEOUT": _GENEROUS_CURL_TIMEOUT_S,
         "PALINODE_HOOK_RECALL_TRIGGERS": "0",
         **env,
     }

@@ -37,6 +37,22 @@ and macOS with Python 3.12; its required Ubuntu names remain `unit-tests (3.11)`
 and `unit-tests (3.12)`. The macOS lane uses Homebrew Python so SQLite can load
 the sqlite-vec extension. The post-merge sweep covers the same three lanes.
 
+The PR lanes are trimmed for latency; nothing is dropped, only moved. They run
+in parallel (`pytest -n auto`, from `pytest-xdist` in the `dev` extra), skip
+tests marked `slow`, and on macOS run only tests marked `platform_sensitive`
+(watcher, hooks, service files, path handling; the module globs are in
+`tests/conftest.py`). The post-merge sweep and a nightly run execute the whole
+unit suite serially on all three lanes. To reproduce a PR lane locally:
+
+```bash
+python -m pytest tests/ -n auto -m "not slow and not serial" --ignore=tests/integration --ignore=tests/live
+python -m pytest tests/ -m "not slow and serial" --ignore=tests/integration --ignore=tests/live
+```
+
+On macOS, prefix both marker expressions with `platform_sensitive and`. Tests
+marked `serial` share a system-wide resource (the real filesystem-event daemon)
+and run in their own non-parallel pass.
+
 Open the first failed step and assertion. A Python installation or SQLite
 extension-loading failure is a runner/setup problem. A watcher coalescing
 assertion tests controlled timer ordering; a real-observer timeout tests actual

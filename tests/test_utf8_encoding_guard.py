@@ -65,7 +65,6 @@ _SWEPT_TEST_FILES: tuple[str, ...] = (
     "tests/test_session_end.py",
     "tests/test_session_end_dedup.py",
     "tests/test_session_end_envelope_guard.py",
-    "tests/test_session_end_floor_hook.py",
     "tests/test_session_end_status_line.py",
     "tests/test_session_end_timeout.py",
     "tests/integration/test_session_end_e2e_l1_l3.py",

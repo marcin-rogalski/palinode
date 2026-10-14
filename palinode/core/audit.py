@@ -60,13 +60,22 @@ class AuditLogger:
         else:
             self._path = Path(memory_dir) / log_path
 
-        # Create parent directory if needed
+        # The parent directory is created on the first write, not here: this
+        # logger is built when ``palinode.mcp`` is imported, and an import must
+        # not create directories in whatever store the process default names.
+
+    def _ensure_parent(self) -> bool:
+        """Create the log's parent directory; disable the logger if that fails."""
+        if self._path is None:
+            return False
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             logger.warning("Cannot create audit directory %s: %s", self._path.parent, e)
             self._enabled = False
             self._path = None
+            return False
+        return True
 
     @property
     def enabled(self) -> bool:
@@ -114,6 +123,8 @@ class AuditLogger:
             "client_info": _resolve_client_info(),
         }
 
+        if not self._ensure_parent():
+            return
         try:
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, separators=(",", ":"), default=str) + "\n")

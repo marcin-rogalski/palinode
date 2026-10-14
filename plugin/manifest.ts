@@ -20,6 +20,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import palinodePlugin, { PALINODE_CONFIG_SCHEMA } from "./index.js";
 
 export const MANIFEST_FILENAME = "openclaw.plugin.json";
@@ -31,6 +32,8 @@ export type PluginManifest = {
   description: string;
   configSchema: Record<string, unknown>;
   contracts: { tools: string[] };
+  activation: { onStartup: true };
+  cliCommands: { name: string; description: string; hasSubcommands: boolean }[];
 };
 
 /** Run `register()` against a recording stub and collect the tool names. */
@@ -47,7 +50,7 @@ function registeredToolNames(): string[] {
     registerCli: noop,
     registerService: noop,
   };
-  palinodePlugin.register(api);
+  palinodePlugin.register(api as unknown as OpenClawPluginApi);
   return names;
 }
 
@@ -67,6 +70,8 @@ export function buildPluginManifest(pluginRoot: string): PluginManifest {
     // The JSON round-trip drops TypeBox's symbol-keyed metadata; what remains is plain JSON Schema.
     configSchema: JSON.parse(JSON.stringify(PALINODE_CONFIG_SCHEMA)) as Record<string, unknown>,
     contracts: { tools: registeredToolNames() },
+    activation: { onStartup: true },
+    cliCommands: [{ name: "palinode", description: "Palinode memory commands", hasSubcommands: true }],
   };
 }
 

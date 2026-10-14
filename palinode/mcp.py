@@ -2903,6 +2903,7 @@ async def _tool_search(arguments: dict[str, Any]) -> list[types.TextContent]:
     payload = resp.json()
     if isinstance(payload, dict):
         results, receipt = payload.get("results") or [], payload.get("receipt")
+        scope = scope.to_applied(payload)
     else:
         results, receipt = payload, None
     # Opt-in abstention (`search.abstain_on_no_confident_match`, default off):

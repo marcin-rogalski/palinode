@@ -120,10 +120,14 @@ decision and is never overridden, so an **empty list means "no project scope"**
 and is how a caller opts out on a pinned server. What the response reports is
 always what the search applied. `palinode search --no-context` sends exactly
 that empty list; the CLI and MCP always state the scope they resolved, empty
-included, rather than leaving the field absent.
+included, rather than leaving the field absent, and then show the scope the
+server reports it applied.
 
 `context.enabled: false` disables all ambient project inference, including the
-environment and mappings. An explicit project still works. `auto_detect: false`
+environment and mappings. An explicit project still works. In the API server's
+config it also leaves every search unscoped, whatever `context` the caller
+sent, and the response reports `disabled`: a client resolves its project under
+its own config, which may not be the server's. `auto_detect: false`
 disables inferred candidates while retaining configured mappings and overrides.
 Search context boosts the project's records and also isolates them. A search
 with a project leaves out records tagged to a *different* project: their

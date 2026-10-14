@@ -72,9 +72,14 @@ def effective_project_scope(context: Sequence[str] | None) -> ProjectResolution:
       no project is applied and none is reported. It is how a caller opts out
       of a pinned server's scope; ``palinode search --no-context`` sends
       exactly this.
+
+    This server's ``context.enabled: false`` overrides all three: the caller
+    resolved its project under its own config, which may not be this one.
     """
     from palinode.core.context_prime import resolve_context
 
+    if not config.context.enabled:
+        return ProjectResolution(None, "disabled")
     if context is None:
         return resolve_context()
     project = next((ref for ref in context

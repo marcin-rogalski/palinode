@@ -655,3 +655,87 @@ def test_a_directory_outside_git_is_sent_unchanged(tmp_path):
     plain.mkdir()
     calls = _stub_curl_run(tmp_path / "run", USER_PROMPT_SUBMIT_HOOK_SCRIPT, str(plain))
     assert f'"cwd":"{plain}"' in calls.replace(" ", ""), calls
+
+
+# ── the server's config decides whether search is scoped ─────────────────────
+
+
+class _ServerWithContextOff:
+    """The API run under ``context.enabled: false``, while the client keeps its own config.
+
+    One process holds both sides here, so the server's config is switched only
+    for the length of each request.
+    """
+
+    def __init__(self, client):
+        self._client = client
+
+    def post(self, path, **kwargs):
+        with pytest.MonkeyPatch.context() as server_config:
+            server_config.setattr(config.context, "enabled", False)
+            return self._client.post(path, **kwargs)
+
+
+@pytest.fixture()
+def client_in_alpha(tmp_path_factory, monkeypatch):
+    """A shell outside git whose directory a default config resolves to ``project/alpha``."""
+    directory = tmp_path_factory.mktemp("work") / "alpha"
+    directory.mkdir()
+    monkeypatch.setenv("CWD", str(directory))
+    monkeypatch.setattr(config.context, "project_map", {})
+    assert config.context.enabled and config.context.auto_detect
+
+
+def test_the_server_leaves_a_search_unscoped_whatever_context_the_client_sends(store):
+    with TestClient(app) as client:
+        payload = _search(_ServerWithContextOff(client), ["project/alpha"])
+    assert BETA in _hit_refs(payload)
+    assert (payload["project"], payload["project_resolved_by"]) == (None, "disabled")
+
+
+def test_cli_search_is_unscoped_when_the_server_config_says_so(store, client_in_alpha, monkeypatch):
+    from palinode.cli._api import api_client
+    from palinode.cli.search import search as cli_search
+
+    args = [QUESTION, "--limit", "10", "--threshold", "0", "--format", "text"]
+    with TestClient(app) as client:
+        monkeypatch.setattr(api_client, "client", client)
+        scoped = CliRunner().invoke(cli_search, args)
+        monkeypatch.setattr(api_client, "client", _ServerWithContextOff(client))
+        unscoped = CliRunner().invoke(cli_search, args)
+    assert scoped.exit_code == 0, scoped.output
+    assert "Scope: project/alpha (cwd_basename)" in scoped.output
+    assert BETA_VALUE not in scoped.output
+    assert unscoped.exit_code == 0, unscoped.output
+    assert BETA_VALUE in unscoped.output
+    assert "Scope: none (disabled)" in unscoped.output
+
+
+def test_cli_search_without_context_reports_the_servers_reason(store, client_in_alpha, monkeypatch):
+    from palinode.cli._api import api_client
+    from palinode.cli.search import search as cli_search
+
+    args = [QUESTION, "--no-context", "--limit", "10", "--threshold", "0", "--format", "text"]
+    with TestClient(app) as client:
+        monkeypatch.setattr(api_client, "client", _ServerWithContextOff(client))
+        result = CliRunner().invoke(cli_search, args)
+    assert result.exit_code == 0, result.output
+    assert "Scope: none (disabled)" in result.output
+
+
+@pytest.mark.asyncio
+async def test_mcp_search_is_unscoped_when_the_server_config_says_so(store, client_in_alpha, monkeypatch):
+    with TestClient(app) as client:
+        server = client
+
+        async def _fake_post(path, json=None, timeout=30.0):
+            return _Resp(server.post(path, json=json).json())
+
+        monkeypatch.setattr(mcp, "_post", _fake_post)
+        scoped = await mcp._tool_search({"query": QUESTION, "threshold": 0.0})
+        server = _ServerWithContextOff(client)
+        unscoped = await mcp._tool_search({"query": QUESTION, "threshold": 0.0})
+    assert "Scope: project/alpha (cwd_basename)" in scoped[0].text
+    assert BETA_VALUE not in scoped[0].text
+    assert BETA_VALUE in unscoped[0].text
+    assert "Scope: none (disabled)" in unscoped[0].text

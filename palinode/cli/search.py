@@ -284,7 +284,7 @@ def search(
         # context is the API's cue to apply its own pinned project, so
         # --no-context (and a shell where nothing resolved) has to say so.
         context = scope.context or []
-        results, receipt = api_client.search(
+        results, receipt, applied = api_client.search(
             query,
             limit=limit,
             category=category,
@@ -304,6 +304,7 @@ def search(
             include_other_projects=include_other_projects or None,
             include_retired=include_retired,
         )
+        scope = scope.to_applied(applied)
 
         output_fmt = OutputFormat(fmt) if fmt else get_default_format()
 

@@ -222,8 +222,8 @@ def test_cli_evidence_lines_and_flag(monkeypatch):
     def _fake_search(query, **kw):
         sent.update(kw)
         # The CLI asks for the delivery receipt, so the client hands back
-        # ``(results, receipt)``.
-        return ([], None) if kw.get("receipt") else []
+        # ``(results, receipt, applied)``.
+        return ([], None, {}) if kw.get("receipt") else []
 
     from palinode.cli.search import api_client
 

@@ -13,9 +13,17 @@ they resolve to the wrong tracker issue in the public mirror.
 
 **Scope decisions**
 
-*   ``.sh``, ``.json``, ``.txt``, and ``.md`` files are all in scope — each is
-    read as plain text, line by line, identical to how
+*   ``.sh``, ``.json``, ``.txt``, ``.md`` and ``.py`` files are all in
+    scope — each is read as plain text, line by line, identical to how
     ``test_no_issue_refs_in_root_config`` scans ``.gitattributes``.
+
+*   ``.py`` is scanned here because the source-comment and string-constant
+    guards walk ``_SOURCE_ROOTS`` only, and that does not include
+    ``examples/``. Without it, an example script added later would sit
+    outside every gate.
+
+*   An unreadable file fails the guard. A file that cannot be decoded as
+    UTF-8 is not evidence of a clean file, so it is reported, not skipped.
 
 *   ``.md`` files **are** in scope.  The existing ``_ROOT_CONFIG_FILES``
     allowlist excludes ``.md`` explicitly because ``docs/CHANGELOG.md`` cites
@@ -35,11 +43,13 @@ sibling guard module rather than reimplemented here, so this test inherits
 exactly the same accept/reject semantics: bare ``#NNN`` fails, full public-repo
 URLs pass, foreign-repo URLs fail.
 """
+
 from __future__ import annotations
 
 
 from pathlib import Path
 
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +59,6 @@ from pathlib import Path
 # accidental divergence from a copy-pasted regex.
 # ---------------------------------------------------------------------------
 from tests.test_no_issue_refs_user_surface import (
-
     _issue_refs,
 )
 
@@ -60,11 +69,25 @@ from tests.test_no_issue_refs_user_surface import (
 # .json — JSON config snippets
 # .txt  — plain-text notes
 # .md   — Markdown guides (see scope decision in module docstring)
-#
-# .py files inside examples/ would already be caught by the source-comment
-# and string-constant guards; they are not excluded here, just unlikely.
+# .py   — example scripts; _SOURCE_ROOTS does not cover examples/
 # ---------------------------------------------------------------------------
-_EXAMPLES_EXTENSIONS = {".sh", ".json", ".txt", ".md"}
+_EXAMPLES_EXTENSIONS = {".sh", ".json", ".txt", ".md", ".py"}
+
+#: Literals this module's own negative controls must spell out. The
+#: string-constant guard folds a concatenated tag back into one literal, so the
+#: cases that prove a bad ref is rejected have to be declared here.
+_ISSUE_REF_FIXTURES: tuple[tuple[str, str], ...] = (
+    (
+        "#224",
+        "Pinned fixture: the bare-tag case the examples guard rejects, built "
+        "into sample comment lines. Used as a number, not as a tracker link.",
+    ),
+    (
+        "https://github.com/some-owner/some-private-repo/issues/224",
+        "Pinned fixture: the foreign-tracker URL form the examples guard "
+        "rejects. Owner and repo are placeholders, not a real tracker.",
+    ),
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
@@ -82,12 +105,16 @@ def _examples_files() -> list[Path]:
 
 
 def _scan_file(path: Path) -> list[tuple[int, str, list[str]]]:
-    """(line_number, raw_line, refs) for every offending line in *path*."""
+    """(line_number, raw_line, refs) for every offending line in *path*.
+
+    Fails closed: a file that cannot be read or decoded raises, so the guard
+    never treats an unscanned file as clean.
+    """
     found: list[tuple[int, str, list[str]]] = []
     try:
         text = path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):  # pragma: no cover
-        return found
+    except (UnicodeDecodeError, OSError) as exc:
+        raise AssertionError(f"examples guard could not read {path}: {exc}") from exc
     for i, line in enumerate(text.splitlines(), 1):
         refs = _issue_refs(line)
         if refs:
@@ -103,7 +130,7 @@ def _scan_file(path: Path) -> list[tuple[int, str, list[str]]]:
 def test_no_issue_refs_in_examples() -> None:
     """No file under examples/ may carry an unfollowable issue reference.
 
-    Scans ``.sh``, ``.json``, ``.txt``, and ``.md`` files line-by-line,
+    Scans ``.sh``, ``.json``, ``.txt``, ``.md`` and ``.py`` files line-by-line,
     reusing the same ``_issue_refs`` helper that guards CLI help text,
     Python comments, docstrings, and CI workflows.
 
@@ -117,9 +144,7 @@ def test_no_issue_refs_in_examples() -> None:
     for path in _examples_files():
         rel = path.relative_to(_REPO_ROOT)
         for lineno, raw, refs in _scan_file(path):
-            offenders.append(
-                f"  {rel}:{lineno}: {refs}  →  {raw[:80]}"
-            )
+            offenders.append(f"  {rel}:{lineno}: {refs}  →  {raw[:80]}")
 
     assert not offenders, (
         "Unfollowable issue refs found in examples/. Replace the bare number "
@@ -182,10 +207,7 @@ def test_foreign_url_rejected_in_examples_context() -> None:
 def test_public_url_does_not_mask_bare_ref_beside_it_in_examples() -> None:
     """Stripping the permitted URL must not swallow an offender next to it."""
     ref = "#" + "224"
-    line = (
-        "# https://github.com/phasespace-labs/palinode/issues/100 "
-        f"and also {ref}"
-    )
+    line = f"# https://github.com/phasespace-labs/palinode/issues/100 and also {ref}"
     assert _issue_refs(line) == [ref]
 
 
@@ -210,3 +232,20 @@ def test_plain_hash_in_shell_comment_is_not_flagged() -> None:
         assert _issue_refs(line) == [], (
             f"Unexpected match in non-issue shell fragment: {line!r}"
         )
+
+
+def test_unreadable_file_fails_closed(tmp_path: Path) -> None:
+    """A selected file that is not valid UTF-8 fails the scan, not passes it."""
+    bad = tmp_path / "broken.md"
+    bad.write_bytes(b"see \xff\xfe " + b"#" + b"224\n")
+    with pytest.raises(AssertionError, match="could not read"):
+        _scan_file(bad)
+
+
+def test_python_examples_are_scanned(tmp_path: Path) -> None:
+    """``.py`` is in scope, and its comments are checked like any other line."""
+    assert ".py" in _EXAMPLES_EXTENSIONS
+    script = tmp_path / "example.py"
+    ref = "#" + "224"
+    script.write_text(f"# workaround for {ref}\nprint('ok')\n", encoding="utf-8")
+    assert _scan_file(script) == [(1, f"# workaround for {ref}", [ref])]

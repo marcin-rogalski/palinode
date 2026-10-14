@@ -15,7 +15,8 @@ Contract these tests pin:
 3. the recency listing (an empty query) filters first too;
 4. no cap: a match set larger than SQLite's bound-variable limit is returned;
 5. an empty match set answers at once: 200, no results, no query embedded and
-   no keyword query run;
+   no keyword query run; a match set the caller may not see (private, or another
+   project's under isolation) is an empty one, and still counts what it withheld;
 6. every other filter still narrows the matching set.
 
 The ranking premise (the resolved records outrank the open one) is asserted in its
@@ -413,6 +414,81 @@ def test_a_where_that_matches_something_still_reads_what_it_needs(engine, retrie
     assert retrievals["recency"].called
     if engine.mode != "lexical":
         assert retrievals["vector"].called
+
+
+@pytest.fixture()
+def hidden_matches(engine, monkeypatch) -> dict:
+    """``marker=private`` matches only a private record and ``marker=beta`` only a
+    record of project beta; counters on every read start after seeding."""
+    paths = {
+        "private": _save(engine, "hidden-private", _resolved_text(1),
+                         metadata={"marker": "private", **_PRIVATE}),
+        "beta": _save(engine, "hidden-beta", _resolved_text(2),
+                      metadata={"marker": "beta"}, entities=["project/beta"]),
+        "public": _save(engine, "shown-public", _resolved_text(3)),
+    }
+    calls = {name: Mock() for name in ("embed", "keyword", "vector", "recency")}
+    for name, owner, attribute in (
+        ("embed", embedder, "embed"), ("keyword", store, "search_fts"),
+        ("vector", store, "search"), ("recency", store, "list_recent"),
+    ):
+        real = getattr(owner, attribute)
+
+        def counting(*args, _real=real, _calls=calls[name], **kwargs):
+            _calls(*args)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(owner, attribute, counting)
+    return {"paths": paths, "calls": calls}
+
+
+def _search_receipt(client, **body) -> dict:
+    body = {**client.fields, "threshold": 0.0, "limit": 5, "receipt": True, **body}
+    response = client.post("/search", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _assert_nothing_read(hidden_matches) -> None:
+    for calls in hidden_matches["calls"].values():
+        calls.assert_not_called()
+
+
+@pytest.mark.parametrize("query", [_KEYWORD, ""])
+def test_a_where_whose_only_match_is_private_answers_like_no_match(
+    engine, hidden_matches, query
+):
+    """A match the caller may not see must not cost an embedding or a query,
+    or the answer's timing tells the caller that a private record matches."""
+    payload = _search_receipt(engine, query=query, where=["marker=private"])
+
+    assert payload["results"] == []
+    _assert_nothing_read(hidden_matches)
+
+
+@pytest.mark.parametrize("query", [_KEYWORD, ""])
+def test_a_where_whose_only_match_is_in_another_project_answers_like_no_match(
+    engine, hidden_matches, query
+):
+    payload = _search_receipt(
+        engine, query=query, where=["marker=beta"], context=["project/alpha"]
+    )
+
+    assert payload["results"] == []
+    assert payload["receipt"]["retrieval"]["other_projects_withheld"] == 1
+    _assert_nothing_read(hidden_matches)
+
+
+@pytest.mark.parametrize("query", [_KEYWORD, ""])
+def test_an_other_project_match_is_searched_when_other_projects_are_asked_for(
+    engine, hidden_matches, query
+):
+    payload = _search_receipt(
+        engine, query=query, where=["marker=beta"], context=["project/alpha"],
+        include_other_projects=True,
+    )
+
+    assert [row["rel_path"] for row in payload["results"]] == [hidden_matches["paths"]["beta"]]
 
 
 # ── 6. every other filter still applies to the matching set ─────────────────

@@ -1888,8 +1888,10 @@ palinode search "which database do we use" --resolve full
 ```
 
 `--where` takes the entries `palinode list --where` takes and is applied before
-ranking, so a match is never lost for ranking below records that do not match.
-When nothing matches, search returns no results and does not embed the query.
+the retrieval limit, so a match is never lost for ranking below records that do
+not match. Visibility, lifecycle and date filters still run on the bounded window
+that retrieval returns. When no match is a record you may see, search returns no
+results and does not embed the query.
 Search matches the copy of the front matter in the index. A front-matter-only
 edit reaches the index on the file's next index pass, so until then search and
 list can disagree. A save through the API indexes inline, so in practice this

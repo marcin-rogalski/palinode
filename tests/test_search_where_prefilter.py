@@ -789,8 +789,8 @@ def test_a_chunk_with_no_metadata_never_matches(engine, stored, query):
 
     assert found == [matching]
     assert bare not in found
-    assert store.list_chunk_ids_matching([("status", "open")]) != []
-    assert all("bare" not in i for i in store.list_chunk_ids_matching([("status", "open")]))
+    assert store.list_chunks_matching([("status", "open")]) != []
+    assert all("bare" not in row["id"] for row in store.list_chunks_matching([("status", "open")]))
 
 
 @pytest.fixture()
@@ -1021,8 +1021,8 @@ def test_every_section_of_a_matching_file_matches(engine):
     finally:
         db.close()
     assert len(chunks) == 3
-    matching = store.list_chunk_ids_matching([("status", "open")])
-    assert {row["id"] for row in chunks} <= set(matching)
+    matching = {row["id"] for row in store.list_chunks_matching([("status", "open")])}
+    assert {row["id"] for row in chunks} <= matching
 
     found = _search(engine, query="zebrafinch", limit=5, where=["status=open"])
 

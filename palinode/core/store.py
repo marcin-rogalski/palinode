@@ -1892,20 +1892,23 @@ def list_recent(
     return results
 
 
-def list_chunk_ids_matching(conditions: list[tuple[str, str]]) -> list[str]:
-    """Ids of the chunks whose indexed frontmatter satisfies every ``where`` condition.
+def list_chunks_matching(conditions: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """The chunks whose indexed frontmatter satisfies every ``where`` condition,
+    each as its ``id``, ``file_path`` and parsed ``metadata``.
 
     Uses :func:`palinode.core.where.matches_where`, the rule list applies to files.
     """
     db = get_db()
     try:
-        rows = db.execute("SELECT id, metadata FROM chunks").fetchall()
+        rows = db.execute("SELECT id, file_path, metadata FROM chunks").fetchall()
     finally:
         db.close()
-    return [
-        row["id"] for row in rows
-        if matches_where(json.loads(row["metadata"]) if row["metadata"] else {}, conditions)
-    ]
+    matches = []
+    for row in rows:
+        metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+        if matches_where(metadata, conditions):
+            matches.append({"id": row["id"], "file_path": row["file_path"], "metadata": metadata})
+    return matches
 
 
 def recent_save_embeddings(
@@ -2411,7 +2414,7 @@ def search_hybrid(
             caller-supplied weight of 1.0 ("BM25 only") cannot zero out the
             only arm actually present.
         chunk_ids: When set, both arms rank only these chunks
-            (:func:`list_chunk_ids_matching`).
+            (:func:`list_chunks_matching`).
 
     Returns:
         Merged and re-ranked list of result dicts, sorted by combined score.

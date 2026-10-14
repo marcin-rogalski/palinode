@@ -105,6 +105,19 @@ def _label_other_projects(results: list[dict[str, Any]], chain) -> None:
             hit["other_project"] = refs
 
 
+def _has_visible_match(chain, matches: list[dict[str, Any]], other_projects: set[str]) -> bool:
+    """Is any ``where`` match a record a session on ``chain`` may see?
+
+    Answers by the live visibility rule search applies to every row. When none is,
+    ``other_projects`` collects the matches project isolation withheld.
+    """
+    from palinode.core.visibility import filter_visible
+
+    one_row_per_file = {row["file_path"]: row for row in matches}.values()
+    return any(filter_visible(chain, [row], other_projects=other_projects)
+               for row in one_row_per_file)
+
+
 def _fetch_visible(
     chain,
     run,
@@ -515,15 +528,19 @@ def search_api(
                     confidence=_assess_confidence([], active_mode),
                 )
         # `where` is resolved to chunk ids before anything ranks, so a match is never
-        # lost for ranking low; no match at all needs neither an embedding nor a query.
-        where_chunk_ids = store.list_chunk_ids_matching(where_conditions) if where_conditions else None
-        where_matches_nothing = where_chunk_ids is not None and not where_chunk_ids
+        # lost for ranking low; no visible match needs neither an embedding nor a query.
+        where_matches = store.list_chunks_matching(where_conditions) if where_conditions else None
+        where_chunk_ids = None if where_matches is None else [row["id"] for row in where_matches]
+        where_withheld: set[str] = set()
+        where_matches_nothing = where_matches is not None and not _has_visible_match(
+            scope_chain, where_matches, where_withheld,
+        )
 
         # empty query → recency-only mode. Skip embedding, query chunks
         # directly ordered by created_at desc, apply types/date_after filter.
         if not req.query.strip():
             recent_limit = limit * 5 if req.min_priority else limit
-            recent_other: set[str] = set()
+            recent_other: set[str] = set(where_withheld)
             recent = [] if where_matches_nothing else _fetch_visible(
                 scope_chain,
                 lambda n: store.list_recent(
@@ -670,7 +687,7 @@ def search_api(
         # The store fetch records ADR-007 recall metadata itself; when the
         # visibility gate widens the window it re-fetches, so recall write-back
         # is deferred to _fetch_visible to keep it counted once per retrieval.
-        other_withheld: set[str] = set()
+        other_withheld: set[str] = set(where_withheld)
         results = [] if where_matches_nothing else _fetch_visible(
             scope_chain,
             _run,

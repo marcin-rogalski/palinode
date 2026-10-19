@@ -15,6 +15,7 @@ All notable changes to Palinode. Format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **The server's config decides whether search is scoped to a project.** `palinode search` and the MCP `palinode_search` tool resolve a project from the working directory under the client's own config and send it in the search `context`. A client that read a different config from the server's, such as a shell without `PALINODE_DIR` falling back to the built-in `context.enabled: true`, scoped a search that the server's `context.enabled: false` leaves unscoped. Now an API server with `context.enabled: false` ignores the project in any `context` and reports `project_resolved_by: disabled`, and the CLI and MCP show the scope the server applied. Where the server enables context, nothing changes ([#246](https://github.com/phasespace-labs/palinode/issues/246)).
+- **The cross-reference updater no longer overwrites a save that lands during its scan.** It scans every record before it writes, and it wrote back the copy it had read first, so a save made during the scan was lost and a file removed during the scan came back. It now reads the file again before it writes. When the text changed, it scans the new text, at most 3 times, and writes nothing after that, because the save raises its own watcher event. A file that was removed, or that is no longer UTF-8, is left alone. A save in the instant between that check and the write can still be lost ([#255](https://github.com/phasespace-labs/palinode/issues/255)).
 
 ### Removed
 

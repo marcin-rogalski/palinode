@@ -67,6 +67,11 @@ STOPWORD_TITLES: frozenset[str] = frozenset(
 )
 
 
+# Scans per call when another writer keeps saving the file during the scan, so a
+# file written without pause never holds the watcher.
+_MAX_SCANS = 3
+
+
 def _is_distinctive_title(title: str, min_token_len: int) -> bool:
     """A title is distinctive enough to match in prose if it is multi-word or
     reasonably long, and is not a generic single keyword."""
@@ -257,6 +262,12 @@ def filter_read_cross_refs(content: str, chain: ScopeChain | None) -> str:
     return "---\n" + yaml.safe_dump(meta, allow_unicode=True, sort_keys=False) + "---\n" + body
 
 
+def _read_text(filepath: str) -> str:
+    """Read a memory as the watcher does, so its ``content`` compares equal."""
+    with open(filepath, encoding="utf-8") as f:
+        return f.read()
+
+
 def update_file_cross_refs(
     filepath: str, *, content: str | None = None
 ) -> dict[str, Any]:
@@ -265,8 +276,9 @@ def update_file_cross_refs(
     Reads the file (or uses ``content``), scans the body against every other
     memory, and rewrites + commits the file only when the computed refs differ
     from the existing frontmatter (idempotent — terminates the watcher's
-    re-process-its-own-write loop). Returns
-    ``{"changed": bool, "refs": list[str], "error": str | None}``.
+    re-process-its-own-write loop). Writes only over the text the refs came
+    from: a save during the scan is scanned anew, up to ``_MAX_SCANS`` times.
+    Returns ``{"changed": bool, "refs": list[str], "error": str | None}``.
     """
     result: dict[str, Any] = {"changed": False, "refs": [], "error": None}
 
@@ -283,20 +295,46 @@ def update_file_cross_refs(
     if not parts or _is_skipped(rel) or parts[0].startswith(".."):
         return result
 
-    try:
-        post = frontmatter.load(filepath) if content is None else frontmatter.loads(content)
-    except Exception as e:
-        result["error"] = f"parse failed: {e}"
-        return result
+    if content is None:
+        try:
+            content = _read_text(filepath)
+        except Exception as e:
+            result["error"] = f"parse failed: {e}"
+            return result
 
     self_ref = path_to_ref(rel)
     min_token_len = config.capture.cross_refs.min_token_len
-    registry = build_registry(memory_dir, exclude_ref=self_ref, source_metadata=post.metadata)
-    refs = detect_refs(post.content, registry, min_token_len=min_token_len)
-    result["refs"] = refs
+    for _ in range(_MAX_SCANS):
+        try:
+            post = frontmatter.loads(content)
+        except Exception as e:
+            result["error"] = f"parse failed: {e}"
+            return result
 
-    if refs == _normalize_existing(post.metadata.get("cross_refs")):
-        return result  # unchanged — no write, no commit
+        registry = build_registry(memory_dir, exclude_ref=self_ref, source_metadata=post.metadata)
+        refs = detect_refs(post.content, registry, min_token_len=min_token_len)
+        result["refs"] = refs
+
+        if refs == _normalize_existing(post.metadata.get("cross_refs")):
+            return result  # unchanged — no write, no commit
+
+        # The scan takes seconds and other writers hold no lock, so write only
+        # over the text the refs came from; a save since then is scanned anew.
+        try:
+            current = _read_text(filepath)
+        except FileNotFoundError:
+            result["error"] = "removed during the scan"
+            return result
+        except (OSError, UnicodeDecodeError) as e:
+            result["error"] = f"read failed: {e}"
+            return result
+        if current == content:
+            break
+        content = current
+    else:
+        # The save that beat the last scan raises its own watcher event.
+        result["error"] = f"changed during each of {_MAX_SCANS} scans"
+        return result
 
     if refs:
         post.metadata["cross_refs"] = refs

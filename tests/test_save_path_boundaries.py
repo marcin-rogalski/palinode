@@ -14,6 +14,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -849,6 +851,15 @@ class TestATypeChangeOfAnExistingFile:
         assert "API returned 400" in result.output
         assert _snapshot(memory_dir) == before
 
+    def test_the_refusal_of_an_untyped_file_says_so_and_not_none(self, client, memory_dir):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+
+        res = _api_save(client, path=_DAILY, type="Decision")
+
+        assert 400 <= res.status_code < 500, res.text
+        assert "None" not in res.text, res.text
+        assert re.search(r"(no|without a)\s+`?type`?", res.text.lower()), res.text
+
     def test_a_save_by_slug_still_changes_the_type_it_always_could(self, client, memory_dir):
         _store_with_a_decision(client, memory_dir)
 
@@ -866,12 +877,80 @@ class TestATypeChangeOfAnExistingFile:
         assert "A second body." in _read(memory_dir, "decisions/keep.md").content
         assert _read(memory_dir, "decisions/keep.md").metadata["type"] == "Decision"
 
+    @pytest.mark.parametrize("held", ["---\ntype: Decision\n---\n\nkept\n", "---\nid: insights-keep\n---\n\nkept\n"])
+    def test_a_save_by_slug_rewrites_a_file_whose_type_differs_or_is_absent(
+        self, client, memory_dir, held
+    ):
+        (memory_dir / "insights").mkdir()
+        (memory_dir / "insights" / "keep.md").write_text(held, encoding="utf-8")
+
+        res = _api_save(client, slug="keep", type="Insight", content="A second body.")
+
+        assert res.status_code == 200, res.text
+        assert "A second body." in _read(memory_dir, "insights/keep.md").content
+
     def test_a_path_with_no_file_yet_takes_any_type(self, client, memory_dir):
         _store_with_a_decision_and_a_daily_note(client, memory_dir)
 
         res = _api_save(client, path="decisions/new.md", type="Insight")
 
         assert res.status_code == 200, res.text
+
+
+# ── 14b · a name in another Unicode form than the one on disk ───────────────
+
+_CAFE = {"composed": "caf\u00e9", "decomposed": "cafe\u0301"}
+assert unicodedata.normalize("NFC", _CAFE["decomposed"]) == _CAFE["composed"] != _CAFE["decomposed"]
+
+#: what is on disk, then what the caller writes: the same name in the other form
+_OTHER_FORM = {
+    "a file stored decomposed, written composed": ("decomposed", "composed", "{name}.md"),
+    "a file stored composed, written decomposed": ("composed", "decomposed", "{name}.md"),
+    "a folder stored decomposed, written composed": ("decomposed", "composed", "{name}/x.md"),
+    "a folder stored composed, written decomposed": ("composed", "decomposed", "{name}/x.md"),
+}
+
+
+def _store_with_a_name_in_one_form(mem: Path, change: str) -> tuple[str, Path]:
+    stored, written, shape = _OTHER_FORM[change]
+    target = mem / shape.format(name=_CAFE[stored])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("---\ntype: Insight\nid: held\n---\n\nkept\n", encoding="utf-8")
+    return shape.format(name=_CAFE[written]), target
+
+
+class TestANameInAnotherUnicodeForm:
+    """Refused whichever check sees it: today the ref rule, which holds ASCII letters and digits only."""
+
+    @pytest.mark.parametrize("change", list(_OTHER_FORM))
+    def test_api_refuses_with_a_4xx_and_the_file_keeps_its_bytes(self, client, memory_dir, change):
+        written, _target = _store_with_a_name_in_one_form(memory_dir, change)
+        before = _snapshot(memory_dir)
+
+        res = _api_save(client, path=written)
+
+        assert 400 <= res.status_code < 500, (change, res.status_code, res.text)
+        assert _snapshot(memory_dir) == before
+
+    @pytest.mark.parametrize("change", list(_OTHER_FORM))
+    def test_core_raises_a_save_validation_error(self, client, memory_dir, change):
+        written, _target = _store_with_a_name_in_one_form(memory_dir, change)
+
+        with pytest.raises(SaveValidationError):
+            save_memory(content=_BODY, type="Insight", path=written)
+
+
+# ── 15b · folders that only some surfaces skip are not reserved here ────────
+
+class TestFoldersOnlyOtherSurfacesSkip:
+    """The save adds no folder of its own to the shared rule, so ``daily/``, ``archive/`` and ``inbox/`` stay open."""
+
+    @pytest.mark.parametrize("folder", ["daily", "archive", "inbox"])
+    def test_a_path_in_the_folder_saves(self, client, memory_dir, folder):
+        res = _api_save(client, path=f"{folder}/note.md")
+
+        assert res.status_code == 200, (folder, res.text)
+        assert _files(memory_dir) == [f"{folder}/note.md"]
 
 
 # ── 16 · the reserved folders are the shared rule's ─────────────────────────

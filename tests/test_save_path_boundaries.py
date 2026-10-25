@@ -11,17 +11,20 @@ are stubs.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 from fastapi.testclient import TestClient
 
 import palinode.mcp as mcp
 from palinode.api import server as srv
 from palinode.api.server import app
-from palinode.core import cross_refs, store
+from palinode.cli import main as cli_main
+from palinode.core import cross_refs, skip_dirs, store
 from palinode.core.claims import derive_claim_id
 from palinode.core.config import config
 from palinode.core.save import SaveValidationError, save_memory
@@ -661,3 +664,296 @@ class TestCommitNamesThePath:
 
         assert _git(repo, "log", "-1", "--format=%s").strip() == "palinode auto-save: insights/probe.md"
         assert _head_files(repo) == ["insights/probe.md"]
+
+
+# ── 14 · a name that differs from one on disk only in case ──────────────────
+
+def _indexed_files(mem: Path) -> list[str]:
+    db = store.get_db()
+    try:
+        return sorted(
+            Path(row[0]).relative_to(mem).as_posix()
+            for row in db.execute("SELECT DISTINCT file_path FROM chunks")
+        )
+    finally:
+        db.close()
+
+
+def _store_with_a_decision(client, mem: Path) -> None:
+    assert _api_save(client, slug="keep", type="Decision", content="The decision to keep.").status_code == 200
+    assert _files(mem) == ["decisions/keep.md"]
+
+
+#: Each differs from the decision on disk by the case of a folder or of the file name only.
+_CASE_VARIANTS = ["Decisions/keep.md", "decisions/Keep.md", "DECISIONS/KEEP.md", "Decisions/new/keep.md"]
+
+#: Each matches no name on disk, so it saves on any filesystem.
+_NAMES_UNLIKE_ANYTHING_ON_DISK = ["decisions/other.md", "decisions2/keep.md", "Fresh/Keep.md"]
+
+
+class TestACaseVariantOfAnExistingName:
+    """Names are compared with the names on disk, so a case-sensitive filesystem refuses them too."""
+
+    @pytest.mark.parametrize("written", _CASE_VARIANTS)
+    def test_api_refuses_with_a_4xx_that_names_the_case(self, client, memory_dir, written):
+        _store_with_a_decision(client, memory_dir)
+
+        res = _api_save(client, path=written, type="Decision", content="A second body.")
+
+        assert 400 <= res.status_code < 500, (written, res.status_code, res.text)
+        assert "case" in res.text.lower(), res.text
+
+    @pytest.mark.parametrize("written", _CASE_VARIANTS)
+    def test_nothing_is_written_made_or_indexed_and_the_decision_keeps_its_bytes(
+        self, client, memory_dir, written
+    ):
+        _store_with_a_decision(client, memory_dir)
+        before = _snapshot(memory_dir)
+        indexed = _indexed_files(memory_dir)
+
+        _api_save(client, path=written, type="Decision", content="A second body.")
+
+        assert _snapshot(memory_dir) == before
+        assert _indexed_files(memory_dir) == indexed == ["decisions/keep.md"]
+
+    @pytest.mark.parametrize("written", _CASE_VARIANTS)
+    def test_core_raises_a_save_validation_error_that_names_the_case(self, client, memory_dir, written):
+        _store_with_a_decision(client, memory_dir)
+
+        with pytest.raises(SaveValidationError) as raised:
+            save_memory(content=_BODY, type="Decision", path=written)
+
+        assert "case" in str(raised.value).lower(), str(raised.value)
+
+    @pytest.mark.parametrize("written", _CASE_VARIANTS)
+    def test_mcp_returns_an_error_that_names_the_case(self, mcp_via_api, client, memory_dir, written):
+        _store_with_a_decision(client, memory_dir)
+
+        text = _mcp_save(path=written, type="Decision")
+
+        assert text.startswith(mcp.DISPATCH_ERROR_PREFIXES), text
+        assert "case" in text.lower(), text
+        assert _files(memory_dir) == ["decisions/keep.md"]
+
+    @pytest.mark.parametrize("written", _CASE_VARIANTS)
+    def test_cli_exits_non_zero_and_writes_nothing(self, cli_via_api, client, memory_dir, written):
+        _store_with_a_decision(client, memory_dir)
+
+        result = CliRunner().invoke(cli_main, ["save", "--type", "Decision", "--path", written, _BODY])
+
+        assert result.exit_code != 0, (written, result.output)
+        assert "API returned 400" in result.output
+        assert _files(memory_dir) == ["decisions/keep.md"]
+
+    def test_a_deeper_folder_is_compared_too(self, client, memory_dir):
+        assert _api_save(client, path="team/designer/role.md").status_code == 200
+
+        res = _api_save(client, path="team/Designer/other.md")
+
+        assert 400 <= res.status_code < 500, res.text
+        assert _files(memory_dir) == ["team/designer/role.md"]
+
+    @pytest.mark.parametrize("written", _NAMES_UNLIKE_ANYTHING_ON_DISK)
+    def test_a_name_that_matches_nothing_on_disk_still_saves(self, client, memory_dir, written):
+        _store_with_a_decision(client, memory_dir)
+
+        res = _api_save(client, path=written, type="Decision")
+
+        assert res.status_code == 200, (written, res.text)
+        assert written in _files(memory_dir)
+
+    def test_the_name_exactly_as_on_disk_still_rewrites_the_file(self, client, memory_dir):
+        _store_with_a_decision(client, memory_dir)
+
+        res = _api_save(client, path="decisions/keep.md", type="Decision", content="A second body.")
+
+        assert res.status_code == 200, res.text
+        assert _files(memory_dir) == ["decisions/keep.md"]
+        assert "A second body." in _read(memory_dir, "decisions/keep.md").content
+
+
+# ── 15 · a path save does not change the type of an existing file ───────────
+
+_DAILY = "daily/2026-10-20.md"
+
+
+def _store_with_a_decision_and_a_daily_note(client, mem: Path) -> None:
+    _store_with_a_decision(client, mem)
+    (mem / "daily").mkdir()
+    (mem / _DAILY).write_text("---\nid: daily-2026-10-20\n---\n\nThe day as it went.\n", encoding="utf-8")
+
+
+#: path, type of the save, what the file on disk is
+_TYPE_CHANGES = {
+    "an Insight onto a Decision": ("decisions/keep.md", "Insight"),
+    "a Decision onto a daily note, which has no type": (_DAILY, "Decision"),
+    "an Insight onto a daily note, which has no type": (_DAILY, "Insight"),
+}
+
+
+class TestATypeChangeOfAnExistingFile:
+
+    @pytest.mark.parametrize("change", list(_TYPE_CHANGES))
+    def test_api_refuses_with_a_4xx_that_names_the_type(self, client, memory_dir, change):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+        written, memory_type = _TYPE_CHANGES[change]
+
+        res = _api_save(client, path=written, type=memory_type, content="A second body.")
+
+        assert 400 <= res.status_code < 500, (change, res.status_code, res.text)
+        assert "type" in res.text.lower(), res.text
+
+    @pytest.mark.parametrize("change", list(_TYPE_CHANGES))
+    def test_the_file_keeps_its_bytes_and_the_index_its_rows(self, client, memory_dir, change):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+        written, memory_type = _TYPE_CHANGES[change]
+        before = _snapshot(memory_dir)
+        indexed = _indexed_files(memory_dir)
+
+        _api_save(client, path=written, type=memory_type, content="A second body.")
+
+        assert _snapshot(memory_dir) == before
+        assert _indexed_files(memory_dir) == indexed
+
+    @pytest.mark.parametrize("change", list(_TYPE_CHANGES))
+    def test_core_raises_a_save_validation_error_that_names_the_type(self, client, memory_dir, change):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+        written, memory_type = _TYPE_CHANGES[change]
+
+        with pytest.raises(SaveValidationError) as raised:
+            save_memory(content=_BODY, type=memory_type, path=written)
+
+        assert "type" in str(raised.value).lower(), str(raised.value)
+
+    @pytest.mark.parametrize("change", list(_TYPE_CHANGES))
+    def test_mcp_returns_an_error_that_names_the_type(self, mcp_via_api, client, memory_dir, change):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+        written, memory_type = _TYPE_CHANGES[change]
+        before = _snapshot(memory_dir)
+
+        text = _mcp_save(path=written, type=memory_type)
+
+        assert text.startswith(mcp.DISPATCH_ERROR_PREFIXES), text
+        assert "type" in text.lower(), text
+        assert _snapshot(memory_dir) == before
+
+    @pytest.mark.parametrize("change", list(_TYPE_CHANGES))
+    def test_cli_exits_non_zero_and_leaves_the_file_alone(self, cli_via_api, client, memory_dir, change):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+        written, memory_type = _TYPE_CHANGES[change]
+        before = _snapshot(memory_dir)
+
+        result = CliRunner().invoke(cli_main, ["save", "--type", memory_type, "--path", written, _BODY])
+
+        assert result.exit_code != 0, (change, result.output)
+        assert "API returned 400" in result.output
+        assert _snapshot(memory_dir) == before
+
+    def test_a_save_by_slug_still_changes_the_type_it_always_could(self, client, memory_dir):
+        _store_with_a_decision(client, memory_dir)
+
+        res = _api_save(client, slug="keep", type="Insight", content="Now an insight.")
+
+        assert res.status_code == 200, res.text
+        assert _files(memory_dir) == ["decisions/keep.md", "insights/keep.md"]
+
+    def test_the_same_type_still_rewrites_the_file(self, client, memory_dir):
+        _store_with_a_decision(client, memory_dir)
+
+        res = _api_save(client, path="decisions/keep.md", type="Decision", content="A second body.")
+
+        assert res.status_code == 200, res.text
+        assert "A second body." in _read(memory_dir, "decisions/keep.md").content
+        assert _read(memory_dir, "decisions/keep.md").metadata["type"] == "Decision"
+
+    def test_a_path_with_no_file_yet_takes_any_type(self, client, memory_dir):
+        _store_with_a_decision_and_a_daily_note(client, memory_dir)
+
+        res = _api_save(client, path="decisions/new.md", type="Insight")
+
+        assert res.status_code == 200, res.text
+
+
+# ── 16 · the reserved folders are the shared rule's ─────────────────────────
+#
+# On main, ``skip_dirs.is_skipped_path`` matches exactly ``ALWAYS_SKIP``; #258 widens it. These
+# tests stand in for the widened rule rather than only count calls: a count stays green when
+# save ignores the answer, and pins one import style. One spy test pins the argument.
+
+def _the_widened_rule(rel_path: str, extra=frozenset()) -> bool:
+    normal = rel_path.replace(os.sep, "/")
+    if normal.startswith("inbox/processed/"):
+        return True
+    return any(
+        folder in {*ALWAYS_SKIP, *extra, "node_modules", ".cache"} for folder in normal.split("/")[:-1]
+    )
+
+
+def _use_the_rule(monkeypatch, rule) -> None:
+    monkeypatch.setattr(skip_dirs, "is_skipped_path", rule)
+    # raising=False: save may reach the rule as skip_dirs.is_skipped_path or as its own name.
+    monkeypatch.setattr(importlib.import_module("palinode.core.save"), "is_skipped_path", rule, raising=False)
+
+
+_NEWLY_RESERVED = ["notes/.cache/x.md", "node_modules/x.md", "inbox/processed/x.md"]
+
+
+class TestFoldersTheSharedRuleReserves:
+
+    @pytest.fixture(autouse=True)
+    def widened_rule(self, monkeypatch):
+        _use_the_rule(monkeypatch, _the_widened_rule)
+
+    @pytest.mark.parametrize("written", _NEWLY_RESERVED)
+    def test_api_refuses_with_a_4xx_that_says_reserved_and_makes_no_folder(
+        self, client, memory_dir, written
+    ):
+        res = _api_save(client, path=written)
+
+        assert 400 <= res.status_code < 500, (written, res.status_code, res.text)
+        assert "reserved" in res.text.lower(), res.text
+        assert _files(memory_dir) == []
+        assert _directories(memory_dir) == []
+
+    @pytest.mark.parametrize("written", _NEWLY_RESERVED)
+    def test_core_raises_a_save_validation_error_that_says_reserved(self, memory_dir, written):
+        with pytest.raises(SaveValidationError) as raised:
+            save_memory(content=_BODY, type="Insight", path=written)
+
+        assert "reserved" in str(raised.value).lower(), str(raised.value)
+        assert _directories(memory_dir) == []
+
+    @pytest.mark.parametrize("written", _NEWLY_RESERVED)
+    def test_mcp_returns_an_error_that_says_reserved(self, mcp_via_api, memory_dir, written):
+        text = _mcp_save(path=written)
+
+        assert text.startswith(mcp.DISPATCH_ERROR_PREFIXES), text
+        assert "reserved" in text.lower(), text
+        assert _files(memory_dir) == []
+
+    @pytest.mark.parametrize("written", _NEWLY_RESERVED)
+    def test_cli_exits_non_zero_and_writes_nothing(self, cli_via_api, memory_dir, written):
+        result = _cli_save("--path", written)
+
+        assert result.exit_code != 0, (written, result.output)
+        assert "API returned 400" in result.output
+        assert _files(memory_dir) == []
+
+    @pytest.mark.parametrize("written", ["notes/cache/x.md", "inbox/x.md", "processed/x.md", "node_modules.md"])
+    def test_a_name_the_rule_does_not_reserve_still_saves(self, client, memory_dir, written):
+        res = _api_save(client, path=written)
+
+        assert res.status_code == 200, (written, res.text)
+
+    def test_the_rule_is_asked_about_the_normalised_path(self, monkeypatch, memory_dir):
+        asked: list[str] = []
+
+        def spy(rel_path, extra=frozenset()):
+            asked.append(rel_path)
+            return False
+
+        _use_the_rule(monkeypatch, spy)
+
+        save_memory(content=_BODY, type="Insight", path="team\\designer\\x.md")
+
+        assert "team/designer/x.md" in asked, asked

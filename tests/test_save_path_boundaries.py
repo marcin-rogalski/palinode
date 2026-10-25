@@ -876,7 +876,7 @@ class TestATypeChangeOfAnExistingFile:
 
 # ── 16 · the reserved folders are the shared rule's ─────────────────────────
 #
-# On main, ``skip_dirs.is_skipped_path`` matches exactly ``ALWAYS_SKIP``; #258 widens it. These
+# On main, ``skip_dirs.is_skipped_path`` matches exactly ``ALWAYS_SKIP``; a later change widens it. These
 # tests stand in for the widened rule rather than only count calls: a count stays green when
 # save ignores the answer, and pins one import style. One spy test pins the argument.
 

@@ -825,8 +825,10 @@ def save_memory(
             ) from exc
 
     if save_path is not None and target_existed and _existing_meta.get("type") != type:
+        held_type = _existing_meta.get("type")
+        held = f"of type {held_type!r}" if held_type else "with no `type`"
         raise SaveValidationError(
-            f"path {save_path!r} holds a file of type {_existing_meta.get('type')!r}; "
+            f"path {save_path!r} holds a file {held}; "
             f"a path save will not change it to type {type!r}"
         )
 

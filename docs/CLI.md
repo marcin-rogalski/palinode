@@ -1871,7 +1871,18 @@ The path is refused, with nothing written and no folder made, when it:
   `.palinode`, `.obsidian`, `.git`, on any directory segment and in any case). A
   file named `logs.md` or a folder named `specsheet/` is fine;
 - runs through a symbolic link anywhere below the memory dir. The memory dir
-  itself may be a link.
+  itself may be a link;
+- spells a folder or the file name differently in case from one already on disk
+  (`Decisions/keep.md` beside `decisions/keep.md`). A case-insensitive
+  filesystem would write into the existing file and index both spellings, so
+  write the name as it is on disk;
+- names a file that exists with a different `type`, or with none, such as a daily
+  note. A path save rewrites a memory under its own type; only a save by slug
+  changes the type.
+
+The folders named above are the ones the shared skip rule reserves
+(`palinode.core.skip_dirs.is_skipped_path`), so a widening of that rule widens
+the refusal.
 
 The memory's id, its claims, its `contradicts` back-links, its `cross_refs` and the
 auto-commit message all name the path, so `team/alice.md` and `people/alice.md`

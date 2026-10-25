@@ -54,7 +54,7 @@ from palinode.core.path_guard import (
     resolve_memory_path,
     to_rel_path,
 )
-from palinode.core.skip_dirs import ALWAYS_SKIP
+from palinode.core.skip_dirs import is_skipped_path
 from palinode.core.typed_links import is_well_formed_ref
 
 logger = logging.getLogger("palinode.core.save")
@@ -249,7 +249,7 @@ def _parse_save_path(path: str) -> str:
         raise SaveValidationError(
             f"path {path!r} has a '..' segment; it must stay inside the memory dir"
         )
-    reserved = _find_reserved_part(parts)
+    reserved = _find_reserved_folder(parts)
     if reserved:
         raise SaveValidationError(f"path {path!r} lies under {reserved!r}, a reserved folder")
     if written.endswith("/") or not parts or not parts[-1].endswith(".md") or parts[-1] == ".md":
@@ -292,6 +292,14 @@ def _assert_save_path_is_writable_in_store(path: str, normalised: str) -> None:
     for depth in range(1, len(parts) + 1):
         ref = "/".join(parts[:depth])
         entry = os.path.join(base_dir, *parts[:depth])
+        differing_name = _find_name_differing_only_in_case(
+            os.path.join(base_dir, *parts[: depth - 1]), parts[depth - 1]
+        )
+        if differing_name:
+            raise SaveValidationError(
+                f"path {path!r} differs only in case from {differing_name!r} already on disk; "
+                "write it with that spelling"
+            )
         if os.path.islink(entry):
             raise SaveValidationError(f"path {path!r} runs through {ref!r}, a symbolic link")
         # Checked before anything is said about the entry, so no answer describes a target outside.
@@ -310,7 +318,7 @@ def _assert_save_path_is_writable_in_store(path: str, normalised: str) -> None:
         _, resolved = resolve_memory_path(normalised)
     except PathTraversalError as exc:
         raise SaveValidationError(escape_message) from exc
-    reserved = _find_reserved_part(os.path.relpath(resolved, base_dir).split(os.sep))
+    reserved = _find_reserved_folder(os.path.relpath(resolved, base_dir).split(os.sep))
     if reserved:
         raise SaveValidationError(f"path {path!r} resolves under {reserved!r}, a reserved folder")
 
@@ -335,13 +343,27 @@ def _get_path_max_bytes(memory_dir: str) -> int:
     return path_max if path_max > 0 else 1024
 
 
-def _find_reserved_part(parts: list[str]) -> str | None:
+def _find_name_differing_only_in_case(folder: str, name: str) -> str | None:
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    if name in names:
+        return None
+    return next((other for other in names if other.casefold() == name.casefold()), None)
+
+
+def _find_reserved_folder(parts: list[str]) -> str | None:
+    """The shortest leading folder path the shared skip rule reserves, or None."""
     # Case-insensitive filesystems, and Windows' trimming of trailing dots and spaces,
     # map ".GIT" and ".git." onto ".git".
-    for part in parts:
-        name = part.rstrip(". ").casefold()
-        if name in ALWAYS_SKIP:
-            return name
+    folders = [part.rstrip(". ").casefold() for part in parts[:-1]]
+    if not is_skipped_path("/".join([*folders, parts[-1]])):
+        return None
+    for depth in range(1, len(folders) + 1):
+        prefix = "/".join(folders[:depth])
+        if is_skipped_path(f"{prefix}/x"):
+            return prefix
     return None
 
 
@@ -471,7 +493,7 @@ def save_memory(
             ``<category>/<slug>.md``. ``type`` still sets the front matter.
             Refused alongside ``slug``, and unless it is relative, ends in
             ``.md``, holds no NUL, ``:`` or ``..``, lies outside every
-            ``skip_dirs.ALWAYS_SKIP`` folder, and meets no symbolic link below the memory dir.
+            ``skip_dirs.is_skipped_path`` folder, and meets no symbolic link below the memory dir.
 
     Returns:
         A dict carrying ``file_path``, ``rel_path`` (and ``path``, the same
@@ -801,6 +823,12 @@ def save_memory(
             raise SaveValidationError(
                 f"Could not read existing frontmatter for {file_path!r}; refusing rewrite"
             ) from exc
+
+    if save_path is not None and target_existed and _existing_meta.get("type") != type:
+        raise SaveValidationError(
+            f"path {save_path!r} holds a file of type {_existing_meta.get('type')!r}; "
+            f"a path save will not change it to type {type!r}"
+        )
 
     # ADR-015 §2.1: `append` is a write semantic, not only a compaction marker.
     # A save declaring `append` against an existing (category, slug) adds to
